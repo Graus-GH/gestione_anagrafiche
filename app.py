@@ -18,7 +18,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 # -----------------------------
 st.set_page_config(page_title="📚 Catalogo Articoli – AgGrid + Edit", layout="wide")
 
-# SCOPES allineati (lettura+scrittura + compat per vecchi token)
+# SCOPES allineati (lettura+scrittura + compat vecchi token)
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -146,7 +146,7 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
 
     df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0)
 
-    # ✅ Niente "or pd.DataFrame()" con DataFrame
+    # ✅ Fix: mai valutare un DataFrame in booleano
     if df is None:
         df = pd.DataFrame()
     elif not isinstance(df, pd.DataFrame):
@@ -303,13 +303,28 @@ grid_resp = AgGrid(
     fit_columns_on_grid_load=True,
 )
 
+# ---------- FIX: normalizza selected_rows ----------
 selected_rows = grid_resp.get("selected_rows", [])
-selected_row = selected_rows[0] if selected_rows else None
+
+if isinstance(selected_rows, pd.DataFrame):
+    selected_rows = selected_rows.to_dict(orient="records")
+elif isinstance(selected_rows, dict):
+    selected_rows = [selected_rows]
+elif selected_rows is None:
+    selected_rows = []
+elif not isinstance(selected_rows, list):
+    try:
+        selected_rows = list(selected_rows)
+    except Exception:
+        selected_rows = []
+
+selected_row = selected_rows[0] if len(selected_rows) > 0 else None
+# ---------------------------------------------------
 
 st.divider()
 st.subheader("🔎 Dettaglio riga selezionata (editabile)")
 
-if not selected_row:
+if selected_row is None:
     st.info("Seleziona una riga nella tabella sopra per vedere e modificare il dettaglio qui.")
     st.stop()
 
