@@ -16,28 +16,38 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 # -----------------------------
 # CONFIG
 # -----------------------------
-st.set_page_config(page_title="📚 Catalogo Articoli – AgGrid + Edit", layout="wide")
+st.set_page_config(page_title="📚 Catalogo Articoli – Edit in-place", layout="wide")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
-REDIRECT_URI = "http://localhost"  # client "Desktop"
+REDIRECT_URI = "http://localhost"
 
-SOURCE_URL = st.secrets["sheet"]["url"]  # es: ...gid=560544700
-DEST_URL = "https://docs.google.com/spreadsheets/d/1_mwlW5sklv-D_992aWC--S3nfg-OJNOs4Nn2RZr8IPE/edit?gid=405669789#gid=405669789"
+# ORIGINE (lettura/scrittura)
+SOURCE_URL = st.secrets["sheet"]["url"]  # deve essere ...gid=560544700
+
+# colonne scrivibili (SOLO queste)
+WRITE_COLS = [
+    "art_kart",
+    "Azienda",
+    "Prodotto",
+    "gradazione",
+    "annata",
+    "Packaging",
+    "Note",
+    "URL_immagine",
+    "art_desart_precedente",
+]
+
+# colonne visibili nei risultati
+RESULT_COLS = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
 
 # -----------------------------
-# HELPERS: normalizzazione stringhe
+# HELPERS: normalizzazione
 # -----------------------------
 def to_clean_str(x):
-    """Converte qualsiasi valore in stringa 'pulita':
-    - NaN/None -> ""
-    - float intero -> '123' (senza .0)
-    - float non intero -> taglia zeri finali ('1.2300' -> '1.23')
-    - altrimenti str(x)
-    """
     if x is None:
         return ""
     try:
@@ -45,28 +55,16 @@ def to_clean_str(x):
             return ""
     except Exception:
         pass
-
-    if isinstance(x, (int,)):
+    if isinstance(x, int):
         return str(x)
     if isinstance(x, float):
         if x.is_integer():
             return str(int(x))
         s = f"{x}"
         return s.rstrip("0").rstrip(".") if "." in s else s
-    # evita 'nan' come testo
     s = str(x).strip()
     return "" if s.lower() == "nan" else s
 
-def clean_cols(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    for c in cols:
-        if c not in df.columns:
-            df[c] = ""
-        df[c] = df[c].map(to_clean_str)
-    return df
-
-# -----------------------------
-# OAUTH
-# -----------------------------
 def parse_sheet_url(url: str):
     m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
     if not m:
@@ -81,6 +79,9 @@ def parse_sheet_url(url: str):
         gid = parsed.fragment.split("gid=")[1]
     return spreadsheet_id, (gid or "0")
 
+# -----------------------------
+# OAUTH
+# -----------------------------
 def build_flow() -> Flow:
     oc = st.secrets["oauth_client"]
     client_conf = {
@@ -97,7 +98,6 @@ def build_flow() -> Flow:
     return Flow.from_client_config(client_conf, scopes=SCOPES, redirect_uri=REDIRECT_URI)
 
 def get_creds():
-    # Reset login
     if st.sidebar.button("🔁 Reset login Google"):
         st.session_state.pop("oauth_token", None)
         st.cache_data.clear()
@@ -120,13 +120,8 @@ def get_creds():
         access_type="offline", include_granted_scopes="true", prompt="consent",
     )
 
-    st.sidebar.info(
-        "1) Apri Google e consenti l’accesso\n"
-        "2) Verrai reindirizzato a **http://localhost** (errore pagina ok)\n"
-        "3) Incolla **l’URL completo** (con `code=`) **oppure solo il codice** e premi Connetti"
-    )
+    st.sidebar.info("1) Apri Google → consenti\n2) Copia l’URL http://localhost/?code=…\n3) Incollalo qui sotto (o solo il codice) e Connetti")
     st.sidebar.link_button("🔐 Apri pagina di autorizzazione Google", auth_url)
-
     pasted = st.sidebar.text_input("URL completo da http://localhost… **o** solo il codice")
     if st.sidebar.button("✅ Connetti"):
         try:
@@ -137,7 +132,7 @@ def get_creds():
             else:
                 code = raw
             if not code:
-                st.sidebar.error("Non trovo `code`. Incolla l’URL intero o solo il codice.")
+                st.sidebar.error("Non trovo `code`.")
                 return None
             flow.fetch_token(code=code)
             creds = flow.credentials
@@ -147,7 +142,7 @@ def get_creds():
         except Exception as e:
             msg = str(e)
             if "scope has changed" in msg.lower():
-                st.sidebar.warning("Scope cambiati: reimposto il login…")
+                st.sidebar.warning("Scope cambiati: resetto il login…")
                 st.session_state.pop("oauth_token", None)
                 st.cache_data.clear()
                 st.rerun()
@@ -160,10 +155,10 @@ def get_gc(creds_json: dict) -> gspread.Client:
     return gspread.authorize(creds)
 
 # -----------------------------
-# LOAD DATA
+# CARICAMENTO ORIGINE
 # -----------------------------
 @st.cache_data(ttl=300, show_spinner=True)
-def load_df_from_source(creds_json: dict, sheet_url: str) -> pd.DataFrame:
+def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     gc = get_gc(creds_json)
     spreadsheet_id, gid = parse_sheet_url(sheet_url)
     sh = gc.open_by_key(spreadsheet_id)
@@ -178,81 +173,103 @@ def load_df_from_source(creds_json: dict, sheet_url: str) -> pd.DataFrame:
         df = pd.DataFrame(df)
     df = df.dropna(how="all")
 
-    # Normalizza colonne (incl. art_kart senza .0)
-    needed = ["art_kart", "art_desart", "art_kmacro", "DescrizioneAffinata", "URL_immagine"]
-    df = clean_cols(df, needed)
-
-    # Pulizia generale (tutte le altre colonne in str pulita)
+    # pulizia stringhe
     for col in df.columns:
         df[col] = df[col].map(to_clean_str)
 
+    # garantisci colonne necessarie per UI
+    for c in set(RESULT_COLS + WRITE_COLS):
+        if c not in df.columns:
+            df[c] = ""
+        else:
+            df[c] = df[c].map(to_clean_str)
+
+    # art_kart sempre “pieno”
+    df["art_kart"] = df["art_kart"].map(to_clean_str)
     return df
 
-def load_target_ws(gc: gspread.Client, dest_url: str):
-    spreadsheet_id, gid = parse_sheet_url(dest_url)
-    sh = gc.open_by_key(spreadsheet_id)
-    ws = next((w for w in sh.worksheets() if str(w.id) == str(gid)), None)
-    if ws is None:
-        raise RuntimeError(f"Nessun worksheet DEST con gid={gid}.")
-    return ws
+def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
+    """Verifica che le intestazioni contengano le colonne richieste; se mancano, le aggiunge in coda.
+       Ritorna mappa {colname: col_index} (1-based)."""
+    header = ws.row_values(1)
+    # elimina spazi doppi
+    header = [h.strip() for h in header]
+    if not header:
+        header = []
 
-def get_ws_header(ws: gspread.Worksheet):
-    return ws.row_values(1)
+    col_map = {name: (i + 1) for i, name in enumerate(header)}
 
-def df_from_ws(ws: gspread.Worksheet) -> pd.DataFrame:
-    df = get_as_dataframe(ws, evaluate_formulas=False, include_index=False, header=0)
-    if df is None:
-        df = pd.DataFrame()
-    elif not isinstance(df, pd.DataFrame):
-        df = pd.DataFrame(df)
-    df = df.dropna(how="all")
-    for col in df.columns:
-        df[col] = df[col].map(to_clean_str)
-    return df
+    added = False
+    for col in required_cols:
+        if col not in col_map:
+            header.append(col)
+            col_map[col] = len(header)
+            added = True
 
-def upsert_row_by_art_kart(ws: gspread.Worksheet, values_map: dict, key_col="art_kart"):
-    header = get_ws_header(ws)
-    if key_col not in header:
-        raise RuntimeError(f"La colonna chiave '{key_col}' non è nell'intestazione del foglio di destinazione.")
+    if added:
+        # riscrive tutta la riga header con eventuali nuove colonne
+        rng = f"A1:{rowcol_to_a1(1, len(header))}"
+        ws.update(rng, [header], value_input_option="USER_ENTERED")
 
-    # Normalizza i valori in uscita (anche art_kart senza .0)
-    normalized = {h: to_clean_str(values_map.get(h, "")) for h in header}
-    row_vals = [normalized[h] for h in header]
+    return col_map
 
-    df_dest = df_from_ws(ws)
-    if df_dest.empty:
-        ws.append_row(row_vals, value_input_option="USER_ENTERED")
-        return "added"
+def find_row_number_by_art_kart(df_local: pd.DataFrame, art_kart: str) -> int | None:
+    """Calcola il numero di riga nel foglio (header=1), basandosi sull'indice del df locale."""
+    mask = (df_local["art_kart"].map(to_clean_str) == to_clean_str(art_kart))
+    if not mask.any():
+        return None
+    idx = df_local.index[mask][0]
+    return idx + 2  # +2: header è riga 1, i dati partono da riga 2
 
-    exists = False
-    target_idx = None
-    if key_col in df_dest.columns:
-        key_val = to_clean_str(values_map.get(key_col, ""))
-        matches = df_dest.index[df_dest[key_col] == key_val].tolist()
-        if matches:
-            exists = True
-            target_idx = matches[0]
-    else:
-        raise RuntimeError(f"Il foglio di destinazione non ha la colonna '{key_col}' leggibile.")
+def upsert_in_source(ws: gspread.Worksheet, df_local: pd.DataFrame, values_map: dict, art_desart_current: str) -> str:
+    """Scrive SOLO WRITE_COLS nell’origine (ws). Se art_kart presente → chiede conferma e aggiorna solo le 9 colonne.
+       Se non presente → appende una nuova riga con solo le 9 colonne valorizzate."""
+    # garantisce colonne scrivibili nell'header
+    col_map = ensure_headers(ws, WRITE_COLS)
 
-    if exists:
+    # impone art_kart pulito
+    art_val = to_clean_str(values_map.get("art_kart", ""))
+    if not art_val:
+        raise RuntimeError("Campo 'art_kart' obbligatorio.")
+
+    # setta art_desart_precedente = art_desart attuale
+    values_map = {k: to_clean_str(v) for k, v in values_map.items()}
+    values_map["art_desart_precedente"] = to_clean_str(art_desart_current)
+
+    # esiste già?
+    row_number = find_row_number_by_art_kart(df_local, art_val)
+
+    if row_number is not None:
+        # conferma sovrascrittura
         confirm_key = "confirm_overwrite"
         if not st.session_state.get(confirm_key, False):
-            st.warning("⚠️ Record con lo stesso 'art_kart' già presente. Confermi di sovrascrivere?")
+            st.warning("⚠️ Record con lo stesso 'art_kart' già presente. Confermi di sovrascrivere SOLO le colonne specificate?")
             if st.button("Confermo sovrascrittura"):
                 st.session_state[confirm_key] = True
                 st.experimental_rerun()
             return "await_confirm"
 
-        row_number = 2 + target_idx
-        start_a1 = rowcol_to_a1(row_number, 1)
-        end_a1 = rowcol_to_a1(row_number, len(header))
-        ws.update(f"{start_a1}:{end_a1}", [row_vals], value_input_option="USER_ENTERED")
+        # aggiorna SOLO le colonne indicate (celle non contigue)
+        for col in WRITE_COLS:
+            c_idx = col_map[col]
+            val = to_clean_str(values_map.get(col, ""))
+            a1 = rowcol_to_a1(row_number, c_idx)
+            ws.update(a1, [[val]], value_input_option="USER_ENTERED")
+
         st.session_state.pop(confirm_key, None)
         return "updated"
-    else:
-        ws.append_row(row_vals, value_input_option="USER_ENTERED")
-        return "added"
+
+    # non esiste → append: prepara una riga lunga quanto l'header ma riempie solo le colonne WRITE_COLS
+    header = ws.row_values(1)
+    if not header:
+        header = []
+    full_len = len(header)
+    new_row = ["" for _ in range(full_len)]
+    for col in WRITE_COLS:
+        if col in col_map:
+            new_row[col_map[col] - 1] = to_clean_str(values_map.get(col, ""))
+    ws.append_row(new_row, value_input_option="USER_ENTERED")
+    return "added"
 
 # -----------------------------
 # APP STATE & FILTRI
@@ -262,14 +279,13 @@ creds = get_creds()
 if not creds:
     st.stop()
 
-# DB locale + versione per refresh veloce
 if "data_version" not in st.session_state:
     st.session_state["data_version"] = 0
 if "df" not in st.session_state:
     try:
-        st.session_state["df"] = load_df_from_source(json.loads(creds.to_json()), SOURCE_URL)
+        st.session_state["df"] = load_df(json.loads(creds.to_json()), SOURCE_URL)
     except Exception as e:
-        st.error("❌ Errore caricando il foglio sorgente. Dettagli sotto:")
+        st.error("❌ Errore caricando il foglio (origine).")
         st.exception(e)
         st.stop()
 
@@ -300,18 +316,14 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # -----------------------------
-# MAIN LAYOUT: SX risultati, DX dettaglio
+# MAIN LAYOUT: SX Risultati, DX Dettaglio
 # -----------------------------
 left, right = st.columns([2, 1], gap="large")
 
 with left:
     st.subheader("📋 Risultati")
-
-    result_cols = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
-    present_cols = [c for c in result_cols if c in filtered.columns]
+    present_cols = [c for c in RESULT_COLS if c in filtered.columns]
     filtered_results = filtered[present_cols].copy()
-
-    # Forza art_kart pulito anche qui
     if "art_kart" in filtered_results.columns:
         filtered_results["art_kart"] = filtered_results["art_kart"].map(to_clean_str)
 
@@ -329,7 +341,7 @@ with left:
         data_return_mode="AS_INPUT",
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         fit_columns_on_grid_load=True,
-        key=f"grid_{st.session_state['data_version']}",   # ⬅️ forza refresh dopo salvataggio
+        key=f"grid_{st.session_state['data_version']}",
     )
 
     selected_rows = grid_resp.get("selected_rows", [])
@@ -349,9 +361,9 @@ with left:
 with right:
     st.subheader("🔎 Dettaglio riga selezionata (editabile)")
     if selected_row is None:
-        st.info("Seleziona una riga nella tabella a sinistra per vedere e modificare il dettaglio qui.")
+        st.info("Seleziona una riga nella tabella a sinistra.")
     else:
-        # Trova la riga completa nel df locale
+        # prendi la riga completa dall'origine locale per avere tutte le colonne
         full_row = None
         if "art_kart" in selected_row and "art_kart" in df.columns:
             key = to_clean_str(selected_row["art_kart"])
@@ -361,92 +373,101 @@ with right:
         if full_row is None:
             full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
-        # Editor verticale: Campo/Valore
-        detail_pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in df.columns]
-        detail_table = pd.DataFrame(detail_pairs, columns=["Campo", "Valore"])
+        # editor verticale (Campo, Valore) CON SOLO LE 9 COLONNE SCRIVIBILI (+ mostro anche art_desart read-only sotto)
+        pairs = []
+        for c in WRITE_COLS:
+            pairs.append({"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))})
+        detail_table = pd.DataFrame(pairs, columns=["Campo", "Valore"])
         edited_detail = st.data_editor(
             detail_table,
             use_container_width=True,
             hide_index=True,
-            num_rows="dynamic",
+            num_rows="fixed",  # vincolo: solo le 9 colonne
             column_config={
-                "Campo": st.column_config.TextColumn(help="Nome della colonna nel foglio"),
-                "Valore": st.column_config.TextColumn(help="Valore da salvare"),
+                "Campo": st.column_config.TextColumn(disabled=True),
+                "Valore": st.column_config.TextColumn(),
             },
             key=f"detail_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
         )
 
-        # Mini-anteprima immagine
-        try:
-            url_img = to_clean_str(full_row.get("URL_immagine", ""))
-            if url_img:
-                st.image(url_img, use_column_width=True, caption="Anteprima immagine")
-        except Exception:
-            pass
+        # info su art_desart (non scriviamo questa colonna, ma la usiamo per 'art_desart_precedente')
+        st.caption("Valore attuale di 'art_desart' (non modificabile, verrà copiato in 'art_desart_precedente' al salvataggio):")
+        st.code(to_clean_str(full_row.get("art_desart", "")))
 
-        st.success("Destinazione: stesso file, worksheet gid=405669789")
-
-        if st.button("💾 Salva su foglio"):
+        # anteprima immagine opzionale
+        url_img = to_clean_str(full_row.get("URL_immagine", ""))
+        if url_img:
             try:
-                # Ricostruisci mappa colonna→valore (pulita)
+                st.image(url_img, use_column_width=True, caption="Anteprima immagine")
+            except Exception:
+                pass
+
+        st.success("Salvataggio: scrive **solo** le colonne specificate, direttamente nell'origine (gid=560544700).")
+
+        if st.button("💾 Salva nell'origine"):
+            try:
+                # ricostruisci mappa valori da editor (solo WRITE_COLS)
                 values_map = {}
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
-                    if not campo:
-                        continue
-                    values_map[campo] = to_clean_str(r.get("Valore", ""))
+                    if campo and campo in WRITE_COLS:
+                        values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # art_kart obbligatorio e pulito
+                # art_kart obbligatorio pulito
                 art_val = to_clean_str(values_map.get("art_kart", ""))
                 if not art_val:
-                    st.error("Campo 'art_kart' obbligatorio per salvare.")
+                    st.error("Campo 'art_kart' obbligatorio.")
                     st.stop()
-                values_map["art_kart"] = art_val  # impone formato pulito
+                values_map["art_kart"] = art_val
 
-                # Scrivi su Google Sheets
+                # client + worksheet origine
                 creds_json = json.loads(Credentials.from_authorized_user_info(
                     st.session_state["oauth_token"], SCOPES
                 ).to_json())
                 gc = get_gc(creds_json)
-                ws_dest = load_target_ws(gc, DEST_URL)
-                result = upsert_row_by_art_kart(ws_dest, values_map, key_col="art_kart")
+                spreadsheet_id, gid = parse_sheet_url(SOURCE_URL)
+                ws = next((w for w in gc.open_by_key(spreadsheet_id).worksheets() if str(w.id) == str(gid)), None)
+                if ws is None:
+                    raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
+
+                # upsert SOLO sulle 9 colonne, art_desart_precedente = art_desart attuale
+                art_desart_current = to_clean_str(full_row.get("art_desart", ""))
+                result = upsert_in_source(ws, df, values_map, art_desart_current)
                 if result == "await_confirm":
-                    st.warning("Conferma richiesta: premi il pulsante 'Confermo sovrascrittura'.")
+                    st.warning("Conferma richiesta: premi 'Confermo sovrascrittura'.")
                     st.stop()
 
-                # ✅ Aggiorna DB locale istantaneamente
+                # ✅ AGGIORNA DB LOCALE istantaneamente (solo 9 colonne)
                 df_local = st.session_state["df"].copy()
-                if "art_kart" not in df_local.columns:
-                    df_local["art_kart"] = ""
+                # assicura presenza colonne scrivibili nel df locale
+                for c in WRITE_COLS:
+                    if c not in df_local.columns:
+                        df_local[c] = ""
 
-                # assicurati di avere tutte le colonne presenti
-                for k in values_map.keys():
-                    if k not in df_local.columns:
-                        df_local[k] = ""
-
-                # cerca riga per art_kart (pulito)
                 row_mask = (df_local["art_kart"].map(to_clean_str) == art_val)
+                # imposta art_desart_precedente in base a art_desart attuale
+                values_map["art_desart_precedente"] = art_desart_current
+
                 if row_mask.any():
                     idx = df_local.index[row_mask][0]
-                    for k, v in values_map.items():
-                        df_local.at[idx, k] = to_clean_str(v)
+                    for k in WRITE_COLS:
+                        df_local.at[idx, k] = to_clean_str(values_map.get(k, ""))
                 else:
+                    # crea nuova riga con tutte le colonne
                     new_row = {c: "" for c in df_local.columns}
-                    for k, v in values_map.items():
-                        if k in new_row:
-                            new_row[k] = to_clean_str(v)
+                    for k in WRITE_COLS:
+                        new_row[k] = to_clean_str(values_map.get(k, ""))
                     df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
 
-                # pulizia finale su art_kart (evita '.0')
+                # arrota art_kart ‘pieno’
                 df_local["art_kart"] = df_local["art_kart"].map(to_clean_str)
-
                 st.session_state["df"] = df_local
-                st.session_state["data_version"] += 1  # forza refresh AgGrid/dettaglio
+                st.session_state["data_version"] += 1
 
                 if result == "updated":
-                    st.success("✅ Riga esistente sovrascritta (UI aggiornata subito).")
+                    st.success("✅ Riga aggiornata (solo le colonne richieste). UI aggiornata subito.")
                 elif result == "added":
-                    st.success("✅ Nuova riga aggiunta (UI aggiornata subito).")
+                    st.success("✅ Nuova riga aggiunta (solo le colonne richieste). UI aggiornata subito.")
 
                 st.rerun()
 
