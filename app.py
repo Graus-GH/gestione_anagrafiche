@@ -7,6 +7,7 @@ import gspread
 import pandas as pd
 import streamlit as st
 from gspread_dataframe import get_as_dataframe
+from gspread.utils import rowcol_to_a1
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -17,15 +18,18 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 # CONFIG
 # -----------------------------
 st.set_page_config(page_title="📚 Catalogo Articoli – AgGrid + Edit", layout="wide")
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",  # <-- scrittura
-    "https://www.googleapis.com/auth/drive",         # <-- accesso file su Drive
-]
-REDIRECT_URI = "http://localhost"  # per client "Desktop"
 
-# SOURCE sheet (lettura filtri)
+# SCOPES allineati (lettura+scrittura + compat per vecchi token)
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+REDIRECT_URI = "http://localhost"  # client "Desktop"
+
+# SOURCE (lettura) — preso dai Secrets
 SOURCE_URL = st.secrets["sheet"]["url"]  # es: ...gid=560544700
-# DEST sheet (scrittura)
+# DEST (scrittura) — fisso come da richiesta
 DEST_URL = "https://docs.google.com/spreadsheets/d/1_mwlW5sklv-D_992aWC--S3nfg-OJNOs4Nn2RZr8IPE/edit?gid=405669789#gid=405669789"
 
 # -----------------------------
@@ -36,6 +40,7 @@ def parse_sheet_url(url: str):
     if not m:
         raise ValueError("URL Google Sheet non valido.")
     spreadsheet_id = m.group(1)
+
     parsed = urlparse(url)
     gid = None
     if parsed.query:
@@ -63,15 +68,22 @@ def build_flow() -> Flow:
 
 
 def get_creds():
+    # Reset login (utile per "scope has changed")
+    if st.sidebar.button("🔁 Reset login Google"):
+        st.session_state.pop("oauth_token", None)
+        st.cache_data.clear()
+        st.rerun()
+
+    # Token presente?
     if "oauth_token" in st.session_state:
         creds = Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES)
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 st.session_state["oauth_token"] = json.loads(creds.to_json())
-            except Exception as e:
-                st.warning(f"Refresh token fallito, rifai login. Dettaglio: {e}")
+            except Exception:
                 st.session_state.pop("oauth_token", None)
+                st.warning("Sessione scaduta. Rifai l’accesso.")
                 return None
         return creds
 
@@ -84,8 +96,8 @@ def get_creds():
 
     st.sidebar.info(
         "1) Apri Google e consenti l’accesso\n"
-        "2) Verrai reindirizzato a **http://localhost**: copia **l’URL completo** (contiene `code=`)\n"
-        "3) Incolla qui sotto l’URL **oppure solo il codice**, poi premi Connetti"
+        "2) Verrai reindirizzato a **http://localhost** (errore pagina ok)\n"
+        "3) Incolla **l’URL completo** (con `code=`) **oppure solo il codice** e premi Connetti"
     )
     st.sidebar.link_button("🔐 Apri pagina di autorizzazione Google", auth_url)
 
@@ -107,6 +119,12 @@ def get_creds():
             st.sidebar.success("Autenticazione completata ✅")
             return creds
         except Exception as e:
+            msg = str(e)
+            if "scope has changed" in msg.lower():
+                st.sidebar.warning("Scope cambiati: reimposto il login…")
+                st.session_state.pop("oauth_token", None)
+                st.cache_data.clear()
+                st.rerun()
             st.sidebar.error(f"Errore OAuth: {e}")
             return None
     return None
@@ -127,7 +145,6 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
         raise RuntimeError(f"Nessun worksheet con gid={gid}.")
     df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0) or pd.DataFrame()
     df = df.dropna(how="all")
-    # normalizza colonne attese
     for c in ["art_kart", "art_desart", "art_kmacro", "DescrizioneAffinata"]:
         if c not in df.columns:
             df[c] = pd.NA
@@ -145,15 +162,12 @@ def load_target_ws(gc: gspread.Client, dest_url: str):
 
 
 def get_ws_header(ws: gspread.Worksheet):
-    # header dalla prima riga
-    header = ws.row_values(1)
-    return header
+    return ws.row_values(1)  # header = prima riga
 
 
 def df_from_ws(ws: gspread.Worksheet) -> pd.DataFrame:
     df = get_as_dataframe(ws, evaluate_formulas=False, include_index=False, header=0) or pd.DataFrame()
     df = df.dropna(how="all")
-    # garantisci str
     for col in df.columns:
         df[col] = df[col].astype("string").fillna("")
     return df
@@ -161,24 +175,18 @@ def df_from_ws(ws: gspread.Worksheet) -> pd.DataFrame:
 
 def upsert_row_by_art_kart(ws: gspread.Worksheet, values_map: dict, key_col="art_kart"):
     """
-    Se key esiste -> chiede conferma (via st.session_state) e sovrascrive la riga
+    Se esiste 'art_kart' nel DEST → chiede conferma e sovrascrive.
     Altrimenti aggiunge una nuova riga in coda.
     """
     header = get_ws_header(ws)
     if key_col not in header:
-        raise RuntimeError(f"La colonna chiave '{key_col}' non è presente nell'intestazione del foglio di destinazione.")
+        raise RuntimeError(f"La colonna chiave '{key_col}' non è nell'intestazione del foglio di destinazione.")
 
-    # Mappa i valori nell'ordine delle intestazioni
-    row_vals = []
-    for h in header:
-        v = values_map.get(h, "")
-        row_vals.append("" if v is None else str(v))
+    # Row nel giusto ordine colonne
+    row_vals = [("" if values_map.get(h) is None else str(values_map.get(h, ""))) for h in header]
 
-    # carica df destinazione per verifica esistenza
     df_dest = df_from_ws(ws)
-    # Se lo sheet è vuoto (nessuna riga sotto header)
     if df_dest.empty:
-        # Append diretto
         ws.append_row(row_vals, value_input_option="USER_ENTERED")
         return "added"
 
@@ -188,9 +196,8 @@ def upsert_row_by_art_kart(ws: gspread.Worksheet, values_map: dict, key_col="art
         matches = df_dest.index[df_dest[key_col] == str(values_map.get(key_col, ""))].tolist()
         if matches:
             exists = True
-            target_idx = matches[0]  # 0-based nel DataFrame (riga dati, non include header)
+            target_idx = matches[0]
     else:
-        # se l'header non è stato letto correttamente
         raise RuntimeError(f"Il foglio di destinazione non ha la colonna '{key_col}' leggibile.")
 
     if exists:
@@ -202,11 +209,13 @@ def upsert_row_by_art_kart(ws: gspread.Worksheet, values_map: dict, key_col="art
                 st.session_state[confirm_key] = True
                 st.experimental_rerun()
             return "await_confirm"
-        # calcola row_number su worksheet: header è riga 1, dati partono da 2
+
+        # Calcolo range A1 per la riga target (header=riga1 → dati da riga2)
         row_number = 2 + target_idx
-        cell_range = f"A{row_number}:{chr(ord('A') + len(header) - 1)}{row_number}"
-        ws.update(cell_range, [row_vals], value_input_option="USER_ENTERED")
-        # reset conferma
+        start_a1 = rowcol_to_a1(row_number, 1)
+        end_a1 = rowcol_to_a1(row_number, len(header))
+        ws.update(f"{start_a1}:{end_a1}", [row_vals], value_input_option="USER_ENTERED")
+
         st.session_state.pop(confirm_key, None)
         return "updated"
     else:
@@ -258,9 +267,10 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # -----------------------------
-# MAIN LAYOUT: sopra risultati, sotto dettaglio
+# MAIN: sopra risultati (AgGrid), sotto dettaglio editabile
 # -----------------------------
 st.subheader("📋 Risultati (seleziona una riga)")
+
 gb = GridOptionsBuilder.from_dataframe(filtered)
 gb.configure_selection("single", use_checkbox=True)
 gb.configure_grid_options(domLayout="normal")
@@ -270,7 +280,7 @@ grid_options = gb.build()
 grid_resp = AgGrid(
     filtered,
     gridOptions=grid_options,
-    height=400,
+    height=420,
     data_return_mode="AS_INPUT",
     update_mode=GridUpdateMode.SELECTION_CHANGED,
     fit_columns_on_grid_load=True,
@@ -286,11 +296,9 @@ if not selected_row:
     st.info("Seleziona una riga nella tabella sopra per vedere e modificare il dettaglio qui.")
     st.stop()
 
-# detail editor: tutte le colonne del df (dinamico)
+# Dettaglio: tutte le colonne (dinamico)
 detail_cols = list(df.columns)
-# Costruisci un DataFrame 1xN per data_editor
 detail_df = pd.DataFrame({c: [selected_row.get(c, "")] for c in detail_cols})
-
 edited_detail = st.data_editor(
     detail_df,
     use_container_width=True,
@@ -298,14 +306,11 @@ edited_detail = st.data_editor(
     num_rows="fixed",
 )
 
-# Pulsante SALVA → scrive su DEST sheet per header columns
-st.success("Destinazione di salvataggio: gid=405669789 (stesso file)")
+st.success("Destinazione salvataggio: stesso file, worksheet gid=405669789")
 if st.button("💾 Salva su foglio"):
     try:
-        # mappa da colonna → valore (string)
         values_map = {c: (str(edited_detail.iloc[0][c]) if c in edited_detail.columns else "") for c in detail_cols}
 
-        # Controllo precondizione: art_kart deve esserci
         art_val = values_map.get("art_kart", "").strip()
         if not art_val:
             st.error("Campo 'art_kart' obbligatorio per salvare.")
@@ -317,12 +322,12 @@ if st.button("💾 Salva su foglio"):
         result = upsert_row_by_art_kart(ws_dest, values_map, key_col="art_kart")
 
         if result == "await_confirm":
-            st.warning("Conferma richiesta per sovrascrivere. Premi nuovamente 'Confermo sovrascrittura'.")
+            st.warning("Conferma richiesta: premi nuovamente il pulsante 'Confermo sovrascrittura'.")
         elif result == "updated":
-            st.success("✅ Riga esistente sovrascritta correttamente.")
-            st.cache_data.clear()  # ricarica eventuali viste
+            st.success("✅ Riga esistente sovrascritta.")
+            st.cache_data.clear()
         elif result == "added":
-            st.success("✅ Nuova riga aggiunta in fondo.")
+            st.success("✅ Nuova riga aggiunta.")
             st.cache_data.clear()
         else:
             st.info(f"Azione: {result}")
