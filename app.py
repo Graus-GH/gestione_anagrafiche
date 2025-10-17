@@ -19,7 +19,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
-REDIRECT_URI = "http://localhost"  # obbligatoria per client "Desktop"
+REDIRECT_URI = "http://localhost"  # per client "Desktop"
 
 # -----------------------------
 # UTILS
@@ -34,8 +34,7 @@ def parse_sheet_url(url: str):
     gid = None
     if parsed.query:
         q = parse_qs(parsed.query)
-        if "gid" in q and q["gid"]:
-            gid = q["gid"][0]
+        gid = (q.get("gid") or [None])[0]
     if (not gid) and parsed.fragment and parsed.fragment.startswith("gid="):
         gid = parsed.fragment.split("gid=")[1]
     return spreadsheet_id, (gid or "0")
@@ -54,7 +53,7 @@ def build_flow() -> Flow:
             "redirect_uris": oc.get("redirect_uris", [REDIRECT_URI]),
         }
     }
-    # forza redirect_uri (evita "Missing redirect_uri")
+    # Forza la redirect per evitare "Missing redirect_uri"
     return Flow.from_client_config(client_conf, scopes=SCOPES, redirect_uri=REDIRECT_URI)
 
 
@@ -67,12 +66,12 @@ def get_creds():
                 creds.refresh(Request())
                 st.session_state["oauth_token"] = json.loads(creds.to_json())
             except Exception as e:
-                st.warning(f"⚠️ Refresh token fallito, rifai login. Dettaglio: {e}")
+                st.warning(f"Refresh token fallito, rifai login. Dettaglio: {e}")
                 st.session_state.pop("oauth_token", None)
                 return None
         return creds
 
-    # Nessun token: avvia il flow e chiedi l'URL incollato
+    # Nessun token: avvia il flow e chiedi l'URL/codice
     flow = build_flow()
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -83,17 +82,22 @@ def get_creds():
     st.info(
         "1) Clicca **Apri pagina di autorizzazione Google** e consenti l’accesso.\n\n"
         "2) Verrai reindirizzato a **http://localhost** (pagina non raggiungibile): va bene così.\n\n"
-        "3) **Copia l’URL completo** dalla barra del browser (inizia con `http://localhost/?code=...`) e incollalo qui sotto."
+        "3) **Copia l’URL completo** dalla barra del browser (inizia con `http://localhost/?code=...`) "
+        "oppure incolla solo il **codice** e premi **Connetti**."
     )
     st.link_button("🔐 Apri pagina di autorizzazione Google", auth_url)
 
-    pasted = st.text_input("Incolla qui l’**URL completo** da `http://localhost/?code=...`")
+    pasted = st.text_input("Incolla l’URL completo da http://localhost… **oppure** solo il codice")
     if st.button("✅ Connetti"):
         try:
-            parsed = urlparse(pasted.strip())
-            code = (parse_qs(parsed.query).get("code") or [None])[0]
+            raw = pasted.strip()
+            if raw.startswith("http"):
+                parsed = urlparse(raw)
+                code = (parse_qs(parsed.query).get("code") or [None])[0]
+            else:
+                code = raw
             if not code:
-                st.error("URL non valido: non trovo `code=`. Incolla l’URL INTERO dalla barra del browser.")
+                st.error("Non trovo `code`. Incolla l’URL intero o solo il codice.")
                 return None
             flow.fetch_token(code=code)  # scambio codice → token
             creds = flow.credentials
@@ -108,18 +112,19 @@ def get_creds():
 
 @st.cache_data(ttl=300, show_spinner=True)
 def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
+    """Apre il foglio e ritorna un DataFrame normalizzato."""
     creds = Credentials.from_authorized_user_info(creds_json, SCOPES)
     gc = gspread.authorize(creds)
 
     spreadsheet_id, gid = parse_sheet_url(sheet_url)
-    sh = gc.open_by_key(spreadsheet_id)
-
+    sh = gc.open_by_key(spreadsheet_id)  # se fallisce: API/permessi
     # trova il worksheet col gid richiesto
     ws = next((w for w in sh.worksheets() if str(w.id) == str(gid)), None)
     if ws is None:
-        raise RuntimeError(f"Nessun worksheet con gid={gid}")
-
-    df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0) or pd.DataFrame()
+        raise RuntimeError(f"Nessun worksheet con gid={gid}.")
+    df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0)
+    if df is None:
+        df = pd.DataFrame()
     df = df.dropna(how="all")
 
     # normalizza colonne usate nei filtri
@@ -127,7 +132,6 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = pd.NA
         df[c] = df[c].astype("string").fillna("")
-
     return df
 
 
@@ -136,7 +140,6 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
 # -----------------------------
 st.title("📚 Catalogo Articoli – Google OAuth")
 
-# URL del foglio dai Secrets (puoi renderlo editabile se ti serve)
 SHEET_URL = st.secrets["sheet"]["url"]
 
 # 1) Login
@@ -148,12 +151,18 @@ if not creds:
 try:
     df = load_df(json.loads(creds.to_json()), SHEET_URL)
 except Exception as e:
-    st.error(f"Errore caricando il foglio: {e}")
+    st.error("❌ Errore caricando il foglio. Dettagli completi sotto:")
+    st.exception(e)
     st.stop()
 
-st.success("✅ Connesso a Google e dati caricati.")
+# 3) Se vuoto, avvisa
+if df.empty:
+    st.warning("⚠️ Il foglio è vuoto o non contiene righe leggibili.")
+    st.stop()
 
-# 3) Filtri
+st.success(f"✅ Dati caricati: {len(df)} righe.")
+
+# 4) Filtri
 with st.expander("Filtri", expanded=True):
     c1, c2, c3 = st.columns(3)
     with c1:
