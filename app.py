@@ -279,110 +279,123 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # -----------------------------
-# MAIN: verticale → Risultati (colonne limitate) → Dettaglio verticale editabile
+# MAIN: layout orizzontale → sx Risultati, dx Dettaglio
 # -----------------------------
-st.subheader("📋 Risultati")
+left, right = st.columns([2, 1], gap="large")
 
-# Mostra solo queste colonne
-result_cols = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
-present_cols = [c for c in result_cols if c in filtered.columns]
-filtered_results = filtered[present_cols].copy()
+with left:
+    st.subheader("📋 Risultati")
+    # Mostra solo queste colonne
+    result_cols = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
+    present_cols = [c for c in result_cols if c in filtered.columns]
+    filtered_results = filtered[present_cols].copy()
 
-gb = GridOptionsBuilder.from_dataframe(filtered_results)
-gb.configure_selection("single", use_checkbox=True)
-gb.configure_grid_options(domLayout="normal")
-if "art_kart" in filtered_results.columns:
-    gb.configure_column("art_kart", header_name="art_kart", pinned="left")
-grid_options = gb.build()
+    gb = GridOptionsBuilder.from_dataframe(filtered_results)
+    gb.configure_selection("single", use_checkbox=True)
+    gb.configure_grid_options(domLayout="normal")
+    if "art_kart" in filtered_results.columns:
+        gb.configure_column("art_kart", header_name="art_kart", pinned="left")
+    grid_options = gb.build()
 
-grid_resp = AgGrid(
-    filtered_results,
-    gridOptions=grid_options,
-    height=420,
-    data_return_mode="AS_INPUT",
-    update_mode=GridUpdateMode.SELECTION_CHANGED,
-    fit_columns_on_grid_load=True,
-)
+    grid_resp = AgGrid(
+        filtered_results,
+        gridOptions=grid_options,
+        height=560,
+        data_return_mode="AS_INPUT",
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        fit_columns_on_grid_load=True,
+    )
 
-# Normalizza selected_rows
-selected_rows = grid_resp.get("selected_rows", [])
-if isinstance(selected_rows, pd.DataFrame):
-    selected_rows = selected_rows.to_dict(orient="records")
-elif isinstance(selected_rows, dict):
-    selected_rows = [selected_rows]
-elif selected_rows is None:
-    selected_rows = []
-elif not isinstance(selected_rows, list):
-    try:
-        selected_rows = list(selected_rows)
-    except Exception:
+    # Normalizza selected_rows
+    selected_rows = grid_resp.get("selected_rows", [])
+    if isinstance(selected_rows, pd.DataFrame):
+        selected_rows = selected_rows.to_dict(orient="records")
+    elif isinstance(selected_rows, dict):
+        selected_rows = [selected_rows]
+    elif selected_rows is None:
         selected_rows = []
+    elif not isinstance(selected_rows, list):
+        try:
+            selected_rows = list(selected_rows)
+        except Exception:
+            selected_rows = []
 
-selected_row = selected_rows[0] if len(selected_rows) > 0 else None
+    selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
-st.subheader("🔎 Dettaglio riga selezionata (editabile)")
-if selected_row is None:
-    st.info("Seleziona una riga nella tabella dei risultati per vedere e modificare il dettaglio qui.")
-    st.stop()
+with right:
+    st.subheader("🔎 Dettaglio riga selezionata (editabile)")
+    if selected_row is None:
+        st.info("Seleziona una riga nella tabella a sinistra per vedere e modificare il dettaglio qui.")
+    else:
+        # Recupera la riga completa dal df originale (per avere tutte le colonne)
+        full_row = None
+        if "art_kart" in selected_row and "art_kart" in df.columns:
+            key = str(selected_row["art_kart"])
+            matches = df[df["art_kart"] == key]
+            if not matches.empty:
+                full_row = matches.iloc[0]
+        if full_row is None:
+            # fallback: usa i campi disponibili nei risultati
+            full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
-# Recupera la riga completa dal df originale (per avere tutte le colonne)
-full_row = None
-if "art_kart" in selected_row and "art_kart" in df.columns:
-    key = str(selected_row["art_kart"])
-    matches = df[df["art_kart"] == key]
-    if not matches.empty:
-        full_row = matches.iloc[0]
-if full_row is None:
-    # fallback: usa i campi disponibili nei risultati
-    full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
+        # Editor VERTICALE: (Campo, Valore)
+        detail_pairs = [{"Campo": c, "Valore": str(full_row.get(c, ""))} for c in df.columns]
+        detail_table = pd.DataFrame(detail_pairs, columns=["Campo", "Valore"])
+        edited_detail = st.data_editor(
+            detail_table,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            column_config={
+                "Campo": st.column_config.TextColumn(help="Nome della colonna nel foglio"),
+                "Valore": st.column_config.TextColumn(help="Valore da salvare"),
+            },
+        )
 
-# Prepara editor VERTICALE: una riga per ogni campo (Campo, Valore)
-detail_pairs = [{"Campo": c, "Valore": str(full_row.get(c, ""))} for c in df.columns]
-detail_table = pd.DataFrame(detail_pairs, columns=["Campo", "Valore"])
-edited_detail = st.data_editor(
-    detail_table,
-    use_container_width=True,
-    hide_index=True,
-    num_rows="dynamic",   # puoi aggiungere righe (saranno ignorate se Campo vuoto)
-    column_config={
-        "Campo": st.column_config.TextColumn(help="Nome della colonna nel foglio"),
-        "Valore": st.column_config.TextColumn(help="Valore da salvare"),
-    },
-)
+        # Thumbnail se disponibile
+        try:
+            url_img = str(full_row.get("URL_immagine", "")).strip()
+            if url_img:
+                st.image(url_img, use_column_width=True, caption="Anteprima immagine")
+        except Exception:
+            pass
 
-st.success("Destinazione salvataggio: stesso file, worksheet gid=405669789")
-if st.button("💾 Salva su foglio"):
-    try:
-        # Ricostruisci mappa colonna→valore dal formato verticale
-        values_map = {}
-        for _, r in edited_detail.iterrows():
-            campo = str(r.get("Campo", "")).strip()
-            if campo == "" or campo.lower() == "nan":
-                continue
-            values_map[campo] = "" if pd.isna(r.get("Valore")) else str(r.get("Valore"))
+        st.success("Destinazione: stesso file, worksheet gid=405669789")
+        if st.button("💾 Salva su foglio"):
+            try:
+                # Ricostruisci mappa colonna→valore dal formato verticale
+                values_map = {}
+                for _, r in edited_detail.iterrows():
+                    campo = str(r.get("Campo", "")).strip()
+                    if campo == "" or campo.lower() == "nan":
+                        continue
+                    values_map[campo] = "" if pd.isna(r.get("Valore")) else str(r.get("Valore"))
 
-        # art_kart obbligatorio
-        art_val = str(values_map.get("art_kart", "")).strip()
-        if not art_val:
-            st.error("Campo 'art_kart' obbligatorio per salvare.")
-            st.stop()
+                # art_kart obbligatorio
+                art_val = str(values_map.get("art_kart", "")).strip()
+                if not art_val:
+                    st.error("Campo 'art_kart' obbligatorio per salvare.")
+                    st.stop()
 
-        # Client gspread per scrittura
-        gc = get_gc(json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json()))
-        ws_dest = load_target_ws(gc, DEST_URL)
+                # Client gspread per scrittura
+                creds_json = json.loads(Credentials.from_authorized_user_info(
+                    st.session_state["oauth_token"], SCOPES
+                ).to_json())
+                gc = get_gc(creds_json)
+                ws_dest = load_target_ws(gc, DEST_URL)
 
-        result = upsert_row_by_art_kart(ws_dest, values_map, key_col="art_kart")
+                result = upsert_row_by_art_kart(ws_dest, values_map, key_col="art_kart")
 
-        if result == "await_confirm":
-            st.warning("Conferma richiesta: premi il pulsante 'Confermo sovrascrittura'.")
-        elif result == "updated":
-            st.success("✅ Riga esistente sovrascritta.")
-            st.cache_data.clear()
-        elif result == "added":
-            st.success("✅ Nuova riga aggiunta.")
-            st.cache_data.clear()
-        else:
-            st.info(f"Azione: {result}")
-    except Exception as e:
-        st.error("❌ Errore durante il salvataggio:")
-        st.exception(e)
+                if result == "await_confirm":
+                    st.warning("Conferma richiesta: premi il pulsante 'Confermo sovrascrittura'.")
+                elif result == "updated":
+                    st.success("✅ Riga esistente sovrascritta.")
+                    st.cache_data.clear()
+                elif result == "added":
+                    st.success("✅ Nuova riga aggiunta.")
+                    st.cache_data.clear()
+                else:
+                    st.info(f"Azione: {result}")
+            except Exception as e:
+                st.error("❌ Errore durante il salvataggio:")
+                st.exception(e)
