@@ -18,7 +18,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 # -----------------------------
 st.set_page_config(page_title="📚 Catalogo Articoli – AgGrid + Edit", layout="wide")
 
-# SCOPES allineati (lettura+scrittura + compat vecchi token)
+# SCOPES (lettura+scrittura + compat vecchi token)
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -145,17 +145,15 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
         raise RuntimeError(f"Nessun worksheet con gid={gid}.")
 
     df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0)
-
-    # ✅ Fix: mai valutare un DataFrame in booleano
     if df is None:
         df = pd.DataFrame()
     elif not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
-
     df = df.dropna(how="all")
 
     # normalizza colonne attese
-    for c in ["art_kart", "art_desart", "art_kmacro", "DescrizioneAffinata"]:
+    needed = ["art_kart", "art_desart", "art_kmacro", "DescrizioneAffinata", "URL_immagine"]
+    for c in needed:
         if c not in df.columns:
             df[c] = pd.NA
         df[c] = df[c].astype("string").fillna("")
@@ -177,13 +175,10 @@ def get_ws_header(ws: gspread.Worksheet):
 
 def df_from_ws(ws: gspread.Worksheet) -> pd.DataFrame:
     df = get_as_dataframe(ws, evaluate_formulas=False, include_index=False, header=0)
-
-    # ✅ Fix verità ambigua
     if df is None:
         df = pd.DataFrame()
     elif not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
-
     df = df.dropna(how="all")
     for col in df.columns:
         df[col] = df[col].astype("string").fillna("")
@@ -284,18 +279,24 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # -----------------------------
-# MAIN: sopra risultati (AgGrid), sotto dettaglio editabile
+# MAIN: verticale → Risultati (colonne limitate) → Dettaglio verticale editabile
 # -----------------------------
-st.subheader("📋 Risultati (seleziona una riga)")
+st.subheader("📋 Risultati")
 
-gb = GridOptionsBuilder.from_dataframe(filtered)
+# Mostra solo queste colonne
+result_cols = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
+present_cols = [c for c in result_cols if c in filtered.columns]
+filtered_results = filtered[present_cols].copy()
+
+gb = GridOptionsBuilder.from_dataframe(filtered_results)
 gb.configure_selection("single", use_checkbox=True)
 gb.configure_grid_options(domLayout="normal")
-gb.configure_column("art_kart", header_name="art_kart", pinned="left")
+if "art_kart" in filtered_results.columns:
+    gb.configure_column("art_kart", header_name="art_kart", pinned="left")
 grid_options = gb.build()
 
 grid_resp = AgGrid(
-    filtered,
+    filtered_results,
     gridOptions=grid_options,
     height=420,
     data_return_mode="AS_INPUT",
@@ -303,9 +304,8 @@ grid_resp = AgGrid(
     fit_columns_on_grid_load=True,
 )
 
-# ---------- FIX: normalizza selected_rows ----------
+# Normalizza selected_rows
 selected_rows = grid_resp.get("selected_rows", [])
-
 if isinstance(selected_rows, pd.DataFrame):
     selected_rows = selected_rows.to_dict(orient="records")
 elif isinstance(selected_rows, dict):
@@ -319,31 +319,50 @@ elif not isinstance(selected_rows, list):
         selected_rows = []
 
 selected_row = selected_rows[0] if len(selected_rows) > 0 else None
-# ---------------------------------------------------
 
-st.divider()
 st.subheader("🔎 Dettaglio riga selezionata (editabile)")
-
 if selected_row is None:
-    st.info("Seleziona una riga nella tabella sopra per vedere e modificare il dettaglio qui.")
+    st.info("Seleziona una riga nella tabella dei risultati per vedere e modificare il dettaglio qui.")
     st.stop()
 
-# Dettaglio: tutte le colonne (dinamico)
-detail_cols = list(df.columns)
-detail_df = pd.DataFrame({c: [selected_row.get(c, "")] for c in detail_cols})
+# Recupera la riga completa dal df originale (per avere tutte le colonne)
+full_row = None
+if "art_kart" in selected_row and "art_kart" in df.columns:
+    key = str(selected_row["art_kart"])
+    matches = df[df["art_kart"] == key]
+    if not matches.empty:
+        full_row = matches.iloc[0]
+if full_row is None:
+    # fallback: usa i campi disponibili nei risultati
+    full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
+
+# Prepara editor VERTICALE: una riga per ogni campo (Campo, Valore)
+detail_pairs = [{"Campo": c, "Valore": str(full_row.get(c, ""))} for c in df.columns]
+detail_table = pd.DataFrame(detail_pairs, columns=["Campo", "Valore"])
 edited_detail = st.data_editor(
-    detail_df,
+    detail_table,
     use_container_width=True,
     hide_index=True,
-    num_rows="fixed",
+    num_rows="dynamic",   # puoi aggiungere righe (saranno ignorate se Campo vuoto)
+    column_config={
+        "Campo": st.column_config.TextColumn(help="Nome della colonna nel foglio"),
+        "Valore": st.column_config.TextColumn(help="Valore da salvare"),
+    },
 )
 
 st.success("Destinazione salvataggio: stesso file, worksheet gid=405669789")
 if st.button("💾 Salva su foglio"):
     try:
-        values_map = {c: (str(edited_detail.iloc[0][c]) if c in edited_detail.columns else "") for c in detail_cols}
+        # Ricostruisci mappa colonna→valore dal formato verticale
+        values_map = {}
+        for _, r in edited_detail.iterrows():
+            campo = str(r.get("Campo", "")).strip()
+            if campo == "" or campo.lower() == "nan":
+                continue
+            values_map[campo] = "" if pd.isna(r.get("Valore")) else str(r.get("Valore"))
 
-        art_val = values_map.get("art_kart", "").strip()
+        # art_kart obbligatorio
+        art_val = str(values_map.get("art_kart", "")).strip()
         if not art_val:
             st.error("Campo 'art_kart' obbligatorio per salvare.")
             st.stop()
