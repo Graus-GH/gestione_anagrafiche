@@ -25,8 +25,8 @@ SCOPES = [
 ]
 REDIRECT_URI = "http://localhost"
 
-# ORIGINE (lettura/scrittura)
-SOURCE_URL = st.secrets["sheet"]["url"]  # deve essere ...gid=560544700
+# ORIGINE (lettura/scrittura) — deve puntare al gid=560544700 nei secrets
+SOURCE_URL = st.secrets["sheet"]["url"]
 
 # colonne scrivibili (SOLO queste)
 WRITE_COLS = [
@@ -189,58 +189,49 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     return df
 
 def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
-    """Verifica che le intestazioni contengano le colonne richieste; se mancano, le aggiunge in coda.
-       Ritorna mappa {colname: col_index} (1-based)."""
+    """Verifica/aggiunge colonne richieste nell’header. Ritorna {colname: col_index(1-based)}."""
     header = ws.row_values(1)
-    # elimina spazi doppi
-    header = [h.strip() for h in header]
-    if not header:
-        header = []
-
-    col_map = {name: (i + 1) for i, name in enumerate(header)}
-
+    header = [h.strip() for h in header] if header else []
+    col_map = {name: i + 1 for i, name in enumerate(header)}
     added = False
     for col in required_cols:
         if col not in col_map:
             header.append(col)
             col_map[col] = len(header)
             added = True
-
     if added:
-        # riscrive tutta la riga header con eventuali nuove colonne
         rng = f"A1:{rowcol_to_a1(1, len(header))}"
         ws.update(rng, [header], value_input_option="USER_ENTERED")
-
     return col_map
 
-def find_row_number_by_art_kart(df_local: pd.DataFrame, art_kart: str) -> int | None:
-    """Calcola il numero di riga nel foglio (header=1), basandosi sull'indice del df locale."""
-    mask = (df_local["art_kart"].map(to_clean_str) == to_clean_str(art_kart))
-    if not mask.any():
+def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kart: str) -> int | None:
+    """Trova la riga reale nel foglio cercando art_kart nella sua colonna (match esatto)."""
+    col_idx = col_map.get("art_kart")
+    if not col_idx:
         return None
-    idx = df_local.index[mask][0]
-    return idx + 2  # +2: header è riga 1, i dati partono da riga 2
+    art_val = to_clean_str(art_kart)
+    col_vals = ws.col_values(col_idx)  # include header
+    for i, v in enumerate(col_vals[1:], start=2):  # dati da riga 2
+        if to_clean_str(v) == art_val:
+            return i
+    return None
 
 def upsert_in_source(ws: gspread.Worksheet, df_local: pd.DataFrame, values_map: dict, art_desart_current: str) -> str:
-    """Scrive SOLO WRITE_COLS nell’origine (ws). Se art_kart presente → chiede conferma e aggiorna solo le 9 colonne.
-       Se non presente → appende una nuova riga con solo le 9 colonne valorizzate."""
-    # garantisce colonne scrivibili nell'header
+    """Scrive SOLO WRITE_COLS nell’origine (ws). Se art_kart presente → conferma e aggiorna; altrimenti appende."""
     col_map = ensure_headers(ws, WRITE_COLS)
 
-    # impone art_kart pulito
     art_val = to_clean_str(values_map.get("art_kart", ""))
     if not art_val:
         raise RuntimeError("Campo 'art_kart' obbligatorio.")
 
-    # setta art_desart_precedente = art_desart attuale
+    # normalizza e imposta art_desart_precedente
     values_map = {k: to_clean_str(v) for k, v in values_map.items()}
     values_map["art_desart_precedente"] = to_clean_str(art_desart_current)
 
-    # esiste già?
-    row_number = find_row_number_by_art_kart(df_local, art_val)
+    # trova riga reale nel foglio
+    row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
 
     if row_number is not None:
-        # conferma sovrascrittura
         confirm_key = "confirm_overwrite"
         if not st.session_state.get(confirm_key, False):
             st.warning("⚠️ Record con lo stesso 'art_kart' già presente. Confermi di sovrascrivere SOLO le colonne specificate?")
@@ -249,20 +240,16 @@ def upsert_in_source(ws: gspread.Worksheet, df_local: pd.DataFrame, values_map: 
                 st.experimental_rerun()
             return "await_confirm"
 
-        # aggiorna SOLO le colonne indicate (celle non contigue)
         for col in WRITE_COLS:
             c_idx = col_map[col]
-            val = to_clean_str(values_map.get(col, ""))
             a1 = rowcol_to_a1(row_number, c_idx)
-            ws.update(a1, [[val]], value_input_option="USER_ENTERED")
+            ws.update(a1, [[to_clean_str(values_map.get(col, ""))]], value_input_option="USER_ENTERED")
 
         st.session_state.pop(confirm_key, None)
         return "updated"
 
-    # non esiste → append: prepara una riga lunga quanto l'header ma riempie solo le colonne WRITE_COLS
-    header = ws.row_values(1)
-    if not header:
-        header = []
+    # append nuova riga con solo WRITE_COLS
+    header = ws.row_values(1) or []
     full_len = len(header)
     new_row = ["" for _ in range(full_len)]
     for col in WRITE_COLS:
@@ -363,7 +350,7 @@ with right:
     if selected_row is None:
         st.info("Seleziona una riga nella tabella a sinistra.")
     else:
-        # prendi la riga completa dall'origine locale per avere tutte le colonne
+        # prendi la riga completa dall'origine locale
         full_row = None
         if "art_kart" in selected_row and "art_kart" in df.columns:
             key = to_clean_str(selected_row["art_kart"])
@@ -373,16 +360,14 @@ with right:
         if full_row is None:
             full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
-        # editor verticale (Campo, Valore) CON SOLO LE 9 COLONNE SCRIVIBILI (+ mostro anche art_desart read-only sotto)
-        pairs = []
-        for c in WRITE_COLS:
-            pairs.append({"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))})
+        # editor verticale: SOLO le 9 colonne scrivibili
+        pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in WRITE_COLS]
         detail_table = pd.DataFrame(pairs, columns=["Campo", "Valore"])
         edited_detail = st.data_editor(
             detail_table,
             use_container_width=True,
             hide_index=True,
-            num_rows="fixed",  # vincolo: solo le 9 colonne
+            num_rows="fixed",
             column_config={
                 "Campo": st.column_config.TextColumn(disabled=True),
                 "Valore": st.column_config.TextColumn(),
@@ -390,11 +375,9 @@ with right:
             key=f"detail_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
         )
 
-        # info su art_desart (non scriviamo questa colonna, ma la usiamo per 'art_desart_precedente')
-        st.caption("Valore attuale di 'art_desart' (non modificabile, verrà copiato in 'art_desart_precedente' al salvataggio):")
+        st.caption("Valore attuale di 'art_desart' (non modificabile, copiato in 'art_desart_precedente' al salvataggio):")
         st.code(to_clean_str(full_row.get("art_desart", "")))
 
-        # anteprima immagine opzionale
         url_img = to_clean_str(full_row.get("URL_immagine", ""))
         if url_img:
             try:
@@ -437,37 +420,34 @@ with right:
                     st.warning("Conferma richiesta: premi 'Confermo sovrascrittura'.")
                     st.stop()
 
-                # ✅ AGGIORNA DB LOCALE istantaneamente (solo 9 colonne)
+                # ✅ aggiorna DB locale (solo WRITE_COLS)
                 df_local = st.session_state["df"].copy()
-                # assicura presenza colonne scrivibili nel df locale
                 for c in WRITE_COLS:
                     if c not in df_local.columns:
                         df_local[c] = ""
 
-                row_mask = (df_local["art_kart"].map(to_clean_str) == art_val)
                 # imposta art_desart_precedente in base a art_desart attuale
                 values_map["art_desart_precedente"] = art_desart_current
 
+                row_mask = (df_local["art_kart"].map(to_clean_str) == art_val)
                 if row_mask.any():
                     idx = df_local.index[row_mask][0]
                     for k in WRITE_COLS:
                         df_local.at[idx, k] = to_clean_str(values_map.get(k, ""))
                 else:
-                    # crea nuova riga con tutte le colonne
                     new_row = {c: "" for c in df_local.columns}
                     for k in WRITE_COLS:
                         new_row[k] = to_clean_str(values_map.get(k, ""))
                     df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
 
-                # arrota art_kart ‘pieno’
                 df_local["art_kart"] = df_local["art_kart"].map(to_clean_str)
                 st.session_state["df"] = df_local
                 st.session_state["data_version"] += 1
 
                 if result == "updated":
-                    st.success("✅ Riga aggiornata (solo le colonne richieste). UI aggiornata subito.")
+                    st.success("✅ Riga aggiornata. UI aggiornata subito.")
                 elif result == "added":
-                    st.success("✅ Nuova riga aggiunta (solo le colonne richieste). UI aggiornata subito.")
+                    st.success("✅ Nuova riga aggiunta. UI aggiornata subito.")
 
                 st.rerun()
 
