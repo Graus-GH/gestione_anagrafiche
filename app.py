@@ -67,7 +67,7 @@ def build_flow() -> Flow:
 
 
 def get_creds():
-    # Reset login (utile per "scope has changed")
+    # Reset login
     if st.sidebar.button("🔁 Reset login Google"):
         st.session_state.pop("oauth_token", None)
         st.cache_data.clear()
@@ -135,7 +135,7 @@ def get_gc(creds_json: dict) -> gspread.Client:
 
 
 @st.cache_data(ttl=300, show_spinner=True)
-def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
+def load_df_from_source(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     """Legge il worksheet sorgente e ritorna un DataFrame normalizzato."""
     gc = get_gc(creds_json)
     spreadsheet_id, gid = parse_sheet_url(sheet_url)
@@ -243,25 +243,31 @@ creds = get_creds()
 if not creds:
     st.stop()
 
-# Carica dati sorgente
-try:
-    df = load_df(json.loads(creds.to_json()), SOURCE_URL)
-except Exception as e:
-    st.error("❌ Errore caricando il foglio sorgente. Dettagli sotto:")
-    st.exception(e)
-    st.stop()
+# Inizializza DB locale in sessione (per refresh istantaneo)
+if "data_version" not in st.session_state:
+    st.session_state["data_version"] = 0
+if "df" not in st.session_state:
+    try:
+        df_loaded = load_df_from_source(json.loads(creds.to_json()), SOURCE_URL)
+        st.session_state["df"] = df_loaded
+    except Exception as e:
+        st.error("❌ Errore caricando il foglio sorgente. Dettagli sotto:")
+        st.exception(e)
+        st.stop()
+
+df = st.session_state["df"]
 
 st.sidebar.header("🎛️ Filtri")
-f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. parte del codice")
-f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero")
+f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. parte del codice", key="f_code")
+f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero", key="f_desc")
 
 reparti = sorted([v for v in df["art_kmacro"].dropna().unique() if str(v).strip() != ""])
-f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti)
+f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti, key="f_reps")
 
-pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0)
-f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero")
+pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0, key="f_pres")
+f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero", key="f_aff")
 
-# Applica filtri
+# Applica filtri RAPIDI sul df in memoria
 mask = pd.Series(True, index=df.index)
 if f_code.strip():
     mask &= df["art_kart"].str.contains(re.escape(f_code.strip()), case=False, na=False)
@@ -285,7 +291,6 @@ left, right = st.columns([2, 1], gap="large")
 
 with left:
     st.subheader("📋 Risultati")
-    # Mostra solo queste colonne
     result_cols = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
     present_cols = [c for c in result_cols if c in filtered.columns]
     filtered_results = filtered[present_cols].copy()
@@ -350,6 +355,7 @@ with right:
                 "Campo": st.column_config.TextColumn(help="Nome della colonna nel foglio"),
                 "Valore": st.column_config.TextColumn(help="Valore da salvare"),
             },
+            key=f"detail_{full_row.get('art_kart','')}",
         )
 
         # Thumbnail se disponibile
@@ -361,6 +367,7 @@ with right:
             pass
 
         st.success("Destinazione: stesso file, worksheet gid=405669789")
+
         if st.button("💾 Salva su foglio"):
             try:
                 # Ricostruisci mappa colonna→valore dal formato verticale
@@ -388,14 +395,46 @@ with right:
 
                 if result == "await_confirm":
                     st.warning("Conferma richiesta: premi il pulsante 'Confermo sovrascrittura'.")
-                elif result == "updated":
-                    st.success("✅ Riga esistente sovrascritta.")
-                    st.cache_data.clear()
-                elif result == "added":
-                    st.success("✅ Nuova riga aggiunta.")
-                    st.cache_data.clear()
+                    st.stop()
+
+                # ✅ AGGIORNAMENTO ISTANTANEO DEL “DATABASE” IN MEMORIA (VELOCE)
+                # se la riga esiste nel df → aggiorna valori; altrimenti append
+                df_local = st.session_state["df"].copy()
+                row_mask = (df_local["art_kart"].astype(str) == art_val)
+                if row_mask.any():
+                    idx = df_local.index[row_mask][0]
+                    for k, v in values_map.items():
+                        if k in df_local.columns:
+                            df_local.at[idx, k] = v
+                        else:
+                            # eventuali nuove colonne: aggiungile
+                            df_local[k] = ""
+                            df_local.at[idx, k] = v
                 else:
-                    st.info(f"Azione: {result}")
+                    # aggiungi nuova riga
+                    # assicurati di avere tutte le colonne presenti
+                    for k in values_map.keys():
+                        if k not in df_local.columns:
+                            df_local[k] = ""
+                    # crea una serie con tutte le colonne
+                    new_row = {c: "" for c in df_local.columns}
+                    for k, v in values_map.items():
+                        if k in new_row:
+                            new_row[k] = v
+                    df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
+
+                st.session_state["df"] = df_local  # push update
+                st.session_state["data_version"] += 1  # bump (se servisse come key)
+
+                # ✅ NOTIFICA
+                if result == "updated":
+                    st.success("✅ Riga esistente sovrascritta (UI aggiornata subito).")
+                elif result == "added":
+                    st.success("✅ Nuova riga aggiunta (UI aggiornata subito).")
+
+                # 🔄 Rerun leggero per ricalcolare filtri/AgGrid sulla base del df aggiornato
+                st.rerun()
+
             except Exception as e:
                 st.error("❌ Errore durante il salvataggio:")
                 st.exception(e)
