@@ -11,7 +11,6 @@ from gspread.utils import rowcol_to_a1
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
-
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # -----------------------------
@@ -137,14 +136,25 @@ def get_gc(creds_json: dict) -> gspread.Client:
 
 @st.cache_data(ttl=300, show_spinner=True)
 def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
+    """Legge il worksheet sorgente e ritorna un DataFrame normalizzato."""
     gc = get_gc(creds_json)
     spreadsheet_id, gid = parse_sheet_url(sheet_url)
     sh = gc.open_by_key(spreadsheet_id)
     ws = next((w for w in sh.worksheets() if str(w.id) == str(gid)), None)
     if ws is None:
         raise RuntimeError(f"Nessun worksheet con gid={gid}.")
-    df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0) or pd.DataFrame()
+
+    df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0)
+
+    # ✅ Niente "or pd.DataFrame()" con DataFrame
+    if df is None:
+        df = pd.DataFrame()
+    elif not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+
     df = df.dropna(how="all")
+
+    # normalizza colonne attese
     for c in ["art_kart", "art_desart", "art_kmacro", "DescrizioneAffinata"]:
         if c not in df.columns:
             df[c] = pd.NA
@@ -166,7 +176,14 @@ def get_ws_header(ws: gspread.Worksheet):
 
 
 def df_from_ws(ws: gspread.Worksheet) -> pd.DataFrame:
-    df = get_as_dataframe(ws, evaluate_formulas=False, include_index=False, header=0) or pd.DataFrame()
+    df = get_as_dataframe(ws, evaluate_formulas=False, include_index=False, header=0)
+
+    # ✅ Fix verità ambigua
+    if df is None:
+        df = pd.DataFrame()
+    elif not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+
     df = df.dropna(how="all")
     for col in df.columns:
         df[col] = df[col].astype("string").fillna("")
@@ -316,13 +333,14 @@ if st.button("💾 Salva su foglio"):
             st.error("Campo 'art_kart' obbligatorio per salvare.")
             st.stop()
 
+        # Client gspread per scrittura
         gc = get_gc(json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json()))
         ws_dest = load_target_ws(gc, DEST_URL)
 
         result = upsert_row_by_art_kart(ws_dest, values_map, key_col="art_kart")
 
         if result == "await_confirm":
-            st.warning("Conferma richiesta: premi nuovamente il pulsante 'Confermo sovrascrittura'.")
+            st.warning("Conferma richiesta: premi il pulsante 'Confermo sovrascrittura'.")
         elif result == "updated":
             st.success("✅ Riga esistente sovrascritta.")
             st.cache_data.clear()
