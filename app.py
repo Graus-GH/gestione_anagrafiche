@@ -118,6 +118,7 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
 
     spreadsheet_id, gid = parse_sheet_url(sheet_url)
     sh = gc.open_by_key(spreadsheet_id)  # se fallisce: API/permessi
+
     # trova il worksheet col gid richiesto
     ws = next((w for w in sh.worksheets() if str(w.id) == str(gid)), None)
     if ws is None:
@@ -136,7 +137,7 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
 
 
 # -----------------------------
-# UI
+# UI LAYOUT
 # -----------------------------
 st.title("📚 Catalogo Articoli – Google OAuth")
 
@@ -155,26 +156,24 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# 3) Se vuoto, avvisa
 if df.empty:
     st.warning("⚠️ Il foglio è vuoto o non contiene righe leggibili.")
     st.stop()
 
-st.success(f"✅ Dati caricati: {len(df)} righe.")
+# -----------------------------
+# SIDEBAR (filtri)
+# -----------------------------
+st.sidebar.header("🎛️ Filtri")
+f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. parte del codice")
+f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero")
 
-# 4) Filtri
-with st.expander("Filtri", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        f_code = st.text_input("art_kart (codice articolo)", placeholder="es. parte del codice")
-        f_desc = st.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero")
-    with c2:
-        reparti = sorted([v for v in df["art_kmacro"].dropna().unique() if str(v).strip() != ""])
-        f_reps = st.multiselect("art_kmacro (reparto)", reparti)
-    with c3:
-        pres = st.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0)
-        f_aff = st.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero")
+reparti = sorted([v for v in df["art_kmacro"].dropna().unique() if str(v).strip() != ""])
+f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti)
 
+pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0)
+f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero")
+
+# Applica filtri
 mask = pd.Series(True, index=df.index)
 if f_code.strip():
     mask &= df["art_kart"].str.contains(re.escape(f_code.strip()), case=False, na=False)
@@ -189,13 +188,85 @@ elif pres == "Assente":
 if f_aff.strip():
     mask &= df["DescrizioneAffinata"].str.contains(re.escape(f_aff.strip()), case=False, na=False)
 
-out = df.loc[mask, ["art_kart", "art_desart", "art_kmacro", "DescrizioneAffinata"]]
-st.markdown(f"**Risultati:** {len(out):,}")
-st.dataframe(out, use_container_width=True)
+filtered = df.loc[mask].copy()
 
-st.download_button(
-    "⬇️ Scarica CSV filtrato",
-    out.to_csv(index=False).encode("utf-8"),
-    "articoli_filtrati.csv",
-    "text/csv",
-)
+# Colonne principali da mostrare nella griglia top
+main_cols = ["art_kart", "art_desart", "art_kmacro", "DescrizioneAffinata"]
+present_cols = [c for c in main_cols if c in filtered.columns]
+
+# -----------------------------
+# MAIN AREA: due sezioni orizzontali
+# -----------------------------
+top = st.container()
+st.divider()
+bottom = st.container()
+
+with top:
+    st.subheader("📋 Risultati")
+    st.caption(f"Righe trovate: **{len(filtered):,}**")
+
+    # Aggiungi colonna di selezione (checkbox singola)
+    sel_col = "✓ Seleziona"
+    # inizializza la colonna se manca
+    if sel_col not in filtered.columns:
+        filtered[sel_col] = False
+
+    # se abbiamo una selezione precedente in sessione, ripristinala
+    selected_key = st.session_state.get("selected_art_kart")
+    if selected_key and selected_key in filtered["art_kart"].values:
+        filtered[sel_col] = filtered["art_kart"] == selected_key
+
+    # Mostra editor con checkbox; disabilita editing su altre colonne
+    edited = st.data_editor(
+        filtered[present_cols + [sel_col]],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            sel_col: st.column_config.CheckboxColumn(help="Seleziona una riga per vedere i dettagli sotto"),
+            "art_kart": st.column_config.TextColumn(disabled=True),
+            "art_desart": st.column_config.TextColumn(disabled=True),
+            "art_kmacro": st.column_config.TextColumn(disabled=True),
+            "DescrizioneAffinata": st.column_config.TextColumn(disabled=True),
+        },
+        key="results_editor",
+    )
+
+    # Enforce selezione singola (tiene la prima spuntata se più di una)
+    if sel_col in edited.columns and edited[sel_col].sum() > 1:
+        first_idx = edited.index[edited[sel_col]].tolist()[0]
+        edited.loc[edited.index != first_idx, sel_col] = False
+
+    # Memorizza la selezione corrente in sessione
+    selected_row = None
+    if sel_col in edited.columns and edited[sel_col].any():
+        selected_row = edited.loc[edited[sel_col]].iloc[0]
+        st.session_state["selected_art_kart"] = selected_row.get("art_kart", None)
+    else:
+        st.session_state.pop("selected_art_kart", None)
+
+    # Download CSV dei risultati
+    st.download_button(
+        "⬇️ Scarica CSV filtrato",
+        edited[present_cols].to_csv(index=False).encode("utf-8"),
+        "articoli_filtrati.csv",
+        "text/csv",
+        use_container_width=True,
+    )
+
+with bottom:
+    st.subheader("🔎 Dettaglio riga selezionata")
+    if selected_row is None:
+        st.info("Seleziona una riga nella tabella sopra per vedere il dettaglio qui.")
+    else:
+        # Recupera il record completo dal df originale tramite art_kart (se presente), altrimenti usa le chiavi dell'edited
+        if "art_kart" in df.columns and pd.notna(selected_row.get("art_kart", pd.NA)):
+            full_row = df[df["art_kart"] == selected_row["art_kart"]].iloc[0]
+        else:
+            # fallback: usa l'indice dell'edited
+            full_row = df.loc[selected_row.name]
+
+        # Mostra TUTTE le colonne in forma leggibile (key → value)
+        detail_df = pd.DataFrame(full_row).reset_index()
+        detail_df.columns = ["Campo", "Valore"]
+        st.dataframe(detail_df, use_container_width=True, hide_index=True)
