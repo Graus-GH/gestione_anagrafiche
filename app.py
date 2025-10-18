@@ -66,6 +66,26 @@ def to_clean_str(x):
     s = str(x).strip()
     return "" if s.lower() == "nan" else s
 
+def normalize_spaces(s: str) -> str:
+    """Collassa spazi multipli e trim."""
+    s = to_clean_str(s)
+    return " ".join(s.split())
+
+def norm_key(s: str) -> str:
+    """Chiave di normalizzazione case-insensitive + trim + spazi."""
+    return normalize_spaces(s).casefold()
+
+def unique_values_case_insensitive(series: pd.Series) -> list[str]:
+    """Valori unici per 'Azienda' in modo case-insensitive e con spazi normalizzati."""
+    d = {}
+    for v in series.dropna():
+        vv = normalize_spaces(v)
+        k = vv.casefold()
+        if k and k not in d:
+            d[k] = vv
+    # ordina alfabeticamente mantenendo display "pulito"
+    return sorted(d.values(), key=lambda x: x.lower())
+
 def parse_sheet_url(url: str):
     m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
     if not m:
@@ -208,7 +228,7 @@ def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
             idx = norm.index(col_norm) + 1
             col_map[col] = idx
         else:
-            header.append(col)      # aggiungi la colonna col nome esatto
+            header.append(col)
             norm.append(col_norm)
             col_map[col] = len(header)
             changed = True
@@ -226,7 +246,7 @@ def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kar
         return None
     art_val = to_clean_str(art_kart)
     col_vals = ws.col_values(col_idx)  # include header
-    for i, v in enumerate(col_vals[1:], start=2):  # dati da riga 2
+    for i, v in enumerate(col_vals[1:], start=2):
         if to_clean_str(v) == art_val:
             return i
     return None
@@ -249,14 +269,12 @@ def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current
     row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
 
     if row_number is not None:
-        # aggiorna cella per cella per compatibilità massima
         for col in WRITE_COLS:
             c_idx = col_map[col]
             a1 = rowcol_to_a1(row_number, c_idx)
             ws.update(a1, [[to_clean_str(values_map.get(col, ""))]], value_input_option="USER_ENTERED")
         return "updated"
 
-    # append nuova riga
     header = ws.row_values(1) or []
     full_len = len(header)
     new_row = ["" for _ in range(full_len)]
@@ -266,6 +284,38 @@ def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current
     ws.append_row(new_row, value_input_option="USER_ENTERED")
     return "added"
 
+def batch_find_replace_azienda(ws: gspread.Worksheet, old_value: str, new_value: str) -> int:
+    """
+    Rinomina massivamente il valore di 'Azienda' usando Sheets batchUpdate/findReplace
+    con match dell'intera cella e case-insensitive, limitato alla sola colonna 'Azienda'.
+    Ritorna il numero di occorrenze modificate secondo la risposta API.
+    """
+    # assicura la colonna e ottieni indice 1-based
+    col_map = ensure_headers(ws, ["Azienda"])
+    col_idx = col_map["Azienda"]  # 1-based
+    # range limitato alla colonna 'Azienda' (tutte le righe)
+    requests = [{
+        "findReplace": {
+            "find": normalize_spaces(old_value),
+            "replacement": normalize_spaces(new_value),
+            "matchCase": False,
+            "matchEntireCell": True,
+            "searchByRegex": False,
+            "range": {
+                "sheetId": ws.id,
+                "startRowIndex": 1,             # esclude header
+                "startColumnIndex": col_idx - 1,
+                "endColumnIndex": col_idx
+            }
+        }
+    }]
+    res = ws.spreadsheet.batch_update({"requests": requests})
+    # la risposta contiene replies.findReplace.occurrencesChanged
+    try:
+        return int(res["replies"][0]["findReplace"]["occurrencesChanged"])
+    except Exception:
+        return 0
+
 # =========================================
 # APP STATE & DIAGNOSTICA
 # =========================================
@@ -274,7 +324,6 @@ creds = get_creds()
 if not creds:
     st.stop()
 
-# 🧪 Diagnostica (email OAuth + prova scrittura)
 def get_current_user_email(gc) -> str | None:
     try:
         r = gc.session.get("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)")
@@ -308,7 +357,6 @@ with st.sidebar.expander("🧪 Diagnostica scrittura", expanded=False):
     except Exception as e:
         st.error(f"Diagnostica: {e}")
 
-# DB locale + versione per refresh veloce
 if "data_version" not in st.session_state:
     st.session_state["data_version"] = 0
 if "df" not in st.session_state:
@@ -321,13 +369,20 @@ if "df" not in st.session_state:
 
 df = st.session_state["df"]
 
+# cache dei valori unici per Azienda
+def refresh_unique_aziende_cache():
+    st.session_state["unique_aziende"] = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
+
+if "unique_aziende" not in st.session_state:
+    refresh_unique_aziende_cache()
+
 # =========================================
 # FILTRI
 # =========================================
 st.sidebar.header("🎛️ Filtri")
 f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. 12345", key="f_code")
 f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero", key="f_desc")
-reparti = sorted([v for v in df["art_kmacro"].dropna().unique() if str(v).strip() != ""])
+reparti = sorted([v for v in df.get("art_kmacro", pd.Series([])).dropna().unique() if str(v).strip() != ""])
 f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti, key="f_reps")
 pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0, key="f_pres")
 f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero", key="f_aff")
@@ -406,8 +461,120 @@ with right:
         if full_row is None:
             full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
-        # editor verticale: SOLO le 9 colonne scrivibili
-        pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in WRITE_COLS]
+        # =========================
+        # Selettore intelligente Azienda
+        # =========================
+        current_azienda = normalize_spaces(full_row.get("Azienda", ""))
+        unique_aziende = st.session_state.get("unique_aziende", [])
+        # Pre-seleziona se presente (case-insensitive)
+        selected_idx = 0
+        options = [""] + unique_aziende  # "" = nessuna/valore vuoto
+        if current_azienda:
+            for i, opt in enumerate(options):
+                if norm_key(opt) == norm_key(current_azienda):
+                    selected_idx = i
+                    break
+
+        st.markdown("**Azienda**")
+        azienda_selected = st.selectbox(
+            "Seleziona o cerca",
+            options=options,
+            index=selected_idx,
+            help="Digita per filtrare (type-ahead).",
+            key=f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}"
+        )
+
+        st.caption("Oppure inserisci un nuovo valore:")
+        new_azienda_input = st.text_input(
+            "Nuovo valore (crea se non esiste)",
+            value="",
+            placeholder="es. Old Group S.p.A.",
+            label_visibility="collapsed",
+            key=f"azienda_new_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}"
+        )
+
+        colA, colB, colC = st.columns([1, 1, 1])
+        with colA:
+            if st.button(f"➕ Crea e usa «{normalize_spaces(new_azienda_input)}»", disabled=(normalize_spaces(new_azienda_input) == "")):
+                candidate = normalize_spaces(new_azienda_input)
+                # idempotenza: se già esiste (case-insensitive) seleziona quello
+                exists = any(norm_key(candidate) == norm_key(v) for v in unique_aziende)
+                if not exists:
+                    # aggiungi in cache locale
+                    st.session_state["unique_aziende"] = sorted(unique_aziende + [candidate], key=lambda x: x.lower())
+                # imposta selezione corrente
+                azienda_selected = candidate
+                st.session_state[f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}"] = candidate
+                st.success(f"Creato (in cache) e selezionato: {candidate}")
+
+        with colB:
+            # conteggio righe che hanno l'attuale valore selezionato (non vuoto)
+            can_mass_rename = bool(azienda_selected and norm_key(azienda_selected) != norm_key(normalize_spaces(new_azienda_input)))
+            if st.button("✏️ Cambia valore globale", disabled=not can_mass_rename):
+                st.session_state["open_mass_rename"] = True
+
+        with colC:
+            st.write("")  # spacer
+
+        # Dialog per rinomina massiva
+        if st.session_state.get("open_mass_rename"):
+            with st.modal("Rinomina massiva «Azienda»", key="rename_modal"):
+                old_val = azienda_selected
+                st.write(f"Valore corrente da rinominare: **{old_val}**")
+                new_val = st.text_input("Nuovo nome", value="", placeholder="Nuovo nome azienda…")
+                # Conteggio X
+                X = int((df.get("Azienda", pd.Series([])).map(norm_key) == norm_key(old_val)).sum())
+                st.warning(f"Attenzione, stai modificando il valore per **{X}** prodotti/righe. Confermi?")
+                c1, c2 = st.columns([1, 1])
+                with c1:
+                    confirm = st.button("✅ Conferma rinomina globale", disabled=(normalize_spaces(new_val) == ""))
+                with c2:
+                    cancel = st.button("Annulla")
+
+                if cancel:
+                    st.session_state["open_mass_rename"] = False
+                    st.rerun()
+
+                if confirm:
+                    try:
+                        creds_json = json.loads(Credentials.from_authorized_user_info(
+                            st.session_state["oauth_token"], SCOPES
+                        ).to_json())
+                        gc = get_gc(creds_json)
+                        ws = open_origin_ws(gc)
+
+                        old_clean = normalize_spaces(old_val)
+                        new_clean = normalize_spaces(new_val)
+
+                        # Idempotenza: se il nuovo valore è equivalente ad un esistente, usa il display già presente
+                        unq = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
+                        for v in unq:
+                            if norm_key(v) == norm_key(new_clean):
+                                new_clean = v
+                                break
+
+                        changed = batch_find_replace_azienda(ws, old_clean, new_clean)
+
+                        # refresh df e cache
+                        st.cache_data.clear()
+                        st.session_state["df"] = load_df(json.loads(creds_json.to_json()), SOURCE_URL)
+                        df = st.session_state["df"]
+                        refresh_unique_aziende_cache()
+                        st.session_state["data_version"] += 1
+                        st.session_state["open_mass_rename"] = False
+
+                        st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
+                        st.toast("Azienda rinominata globalmente", icon="✅")
+                        st.rerun()
+                    except Exception as e:
+                        st.error("❌ Errore durante la rinomina massiva:")
+                        st.exception(e)
+
+        # =========================
+        # Editor per gli altri campi (escludo 'Azienda' perché gestito sopra)
+        # =========================
+        other_cols = [c for c in WRITE_COLS if c != "Azienda"]
+        pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in other_cols]
         detail_table = pd.DataFrame(pairs, columns=["Campo", "Valore"])
         edited_detail = st.data_editor(
             detail_table,
@@ -435,12 +602,15 @@ with right:
 
         if st.button("💾 Salva nell'origine"):
             try:
-                # mappa valori da editor (solo WRITE_COLS)
+                # mappa valori da editor (solo WRITE_COLS tranne Azienda, che prendo dal selettore)
                 values_map = {}
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
-                    if campo and campo in WRITE_COLS:
+                    if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
+
+                # aggiungi Azienda dal selettore, normalizzando spazi
+                values_map["Azienda"] = normalize_spaces(azienda_selected or new_azienda_input)
 
                 # art_kart obbligatorio pulito
                 art_val = to_clean_str(values_map.get("art_kart", ""))
@@ -481,8 +651,9 @@ with right:
                         new_row[k] = to_clean_str(values_map.get(k, ""))
                     df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
 
-                df_local["art_kart"] = df_local["art_kart"].map(to_clean_str)
+                # aggiorna cache aziende (idempotenza)
                 st.session_state["df"] = df_local
+                refresh_unique_aziende_cache()
                 st.session_state["data_version"] += 1
 
                 if result == "updated":
