@@ -83,7 +83,6 @@ def unique_values_case_insensitive(series: pd.Series) -> list[str]:
         k = vv.casefold()
         if k and k not in d:
             d[k] = vv
-    # ordina alfabeticamente mantenendo display "pulito"
     return sorted(d.values(), key=lambda x: x.lower())
 
 def parse_sheet_url(url: str):
@@ -290,10 +289,8 @@ def batch_find_replace_azienda(ws: gspread.Worksheet, old_value: str, new_value:
     con match dell'intera cella e case-insensitive, limitato alla sola colonna 'Azienda'.
     Ritorna il numero di occorrenze modificate secondo la risposta API.
     """
-    # assicura la colonna e ottieni indice 1-based
     col_map = ensure_headers(ws, ["Azienda"])
     col_idx = col_map["Azienda"]  # 1-based
-    # range limitato alla colonna 'Azienda' (tutte le righe)
     requests = [{
         "findReplace": {
             "find": normalize_spaces(old_value),
@@ -310,7 +307,6 @@ def batch_find_replace_azienda(ws: gspread.Worksheet, old_value: str, new_value:
         }
     }]
     res = ws.spreadsheet.batch_update({"requests": requests})
-    # la risposta contiene replies.findReplace.occurrencesChanged
     try:
         return int(res["replies"][0]["findReplace"]["occurrencesChanged"])
     except Exception:
@@ -382,7 +378,7 @@ if "unique_aziende" not in st.session_state:
 st.sidebar.header("🎛️ Filtri")
 f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. 12345", key="f_code")
 f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero", key="f_desc")
-reparti = sorted([v for v in df.get("art_kmacro", pd.Series([])).dropna().unique() if str(v).strip() != ""])
+reparti = sorted([v for v in df.get("art_kmacro", pd.Series([], dtype=object)).dropna().unique() if str(v).strip() != ""])
 f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti, key="f_reps")
 pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0, key="f_pres")
 f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero", key="f_aff")
@@ -462,16 +458,24 @@ with right:
             full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
         # =========================
-        # Selettore intelligente Azienda
+        # Selettore intelligente Azienda (con pre-selezione sicura)
         # =========================
         current_azienda = normalize_spaces(full_row.get("Azienda", ""))
         unique_aziende = st.session_state.get("unique_aziende", [])
-        # Pre-seleziona se presente (case-insensitive)
+
+        # Valore da pre-selezionare (se è stato appena creato)
+        pending_val = st.session_state.pop("pending_azienda_value", None)
+        preselect_value = normalize_spaces(pending_val or current_azienda)
+
+        options = [""] + unique_aziende
+        # Se il valore da pre-selezionare non è (ancora) nell’elenco, aggiungilo temporaneamente
+        if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
+            options.append(preselect_value)
+
         selected_idx = 0
-        options = [""] + unique_aziende  # "" = nessuna/valore vuoto
-        if current_azienda:
+        if preselect_value:
             for i, opt in enumerate(options):
-                if norm_key(opt) == norm_key(current_azienda):
+                if norm_key(opt) == norm_key(preselect_value):
                     selected_idx = i
                     break
 
@@ -497,18 +501,17 @@ with right:
         with colA:
             if st.button(f"➕ Crea e usa «{normalize_spaces(new_azienda_input)}»", disabled=(normalize_spaces(new_azienda_input) == "")):
                 candidate = normalize_spaces(new_azienda_input)
-                # idempotenza: se già esiste (case-insensitive) seleziona quello
-                exists = any(norm_key(candidate) == norm_key(v) for v in unique_aziende)
-                if not exists:
-                    # aggiungi in cache locale
-                    st.session_state["unique_aziende"] = sorted(unique_aziende + [candidate], key=lambda x: x.lower())
-                # imposta selezione corrente
-                azienda_selected = candidate
-                st.session_state[f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}"] = candidate
-                st.success(f"Creato (in cache) e selezionato: {candidate}")
+                # idempotenza: se già esiste (case-insensitive) non duplicare
+                if all(norm_key(candidate) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
+                    st.session_state["unique_aziende"] = sorted(
+                        st.session_state.get("unique_aziende", []) + [candidate],
+                        key=lambda x: x.lower()
+                    )
+                # Imposta pre-selezione per il prossimo run e ri-esegui l’app
+                st.session_state["pending_azienda_value"] = candidate
+                st.rerun()
 
         with colB:
-            # conteggio righe che hanno l'attuale valore selezionato (non vuoto)
             can_mass_rename = bool(azienda_selected and norm_key(azienda_selected) != norm_key(normalize_spaces(new_azienda_input)))
             if st.button("✏️ Cambia valore globale", disabled=not can_mass_rename):
                 st.session_state["open_mass_rename"] = True
@@ -523,7 +526,7 @@ with right:
                 st.write(f"Valore corrente da rinominare: **{old_val}**")
                 new_val = st.text_input("Nuovo nome", value="", placeholder="Nuovo nome azienda…")
                 # Conteggio X
-                X = int((df.get("Azienda", pd.Series([])).map(norm_key) == norm_key(old_val)).sum())
+                X = int((df.get("Azienda", pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val)).sum())
                 st.warning(f"Attenzione, stai modificando il valore per **{X}** prodotti/righe. Confermi?")
                 c1, c2 = st.columns([1, 1])
                 with c1:
@@ -546,7 +549,7 @@ with right:
                         old_clean = normalize_spaces(old_val)
                         new_clean = normalize_spaces(new_val)
 
-                        # Idempotenza: se il nuovo valore è equivalente ad un esistente, usa il display già presente
+                        # Se il nuovo valore coincide (case-insensitive) con uno esistente, usa il display già presente
                         unq = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
                         for v in unq:
                             if norm_key(v) == norm_key(new_clean):
@@ -557,7 +560,8 @@ with right:
 
                         # refresh df e cache
                         st.cache_data.clear()
-                        st.session_state["df"] = load_df(json.loads(creds_json.to_json()), SOURCE_URL)
+                        st.session_state["df"] = load_df(creds_json, SOURCE_URL)
+                        # aggiorna df locale visibile in questo scope
                         df = st.session_state["df"]
                         refresh_unique_aziende_cache()
                         st.session_state["data_version"] += 1
@@ -609,8 +613,9 @@ with right:
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # aggiungi Azienda dal selettore, normalizzando spazi
-                values_map["Azienda"] = normalize_spaces(azienda_selected or new_azienda_input)
+                # aggiungi Azienda dal selettore (o nuovo input se presente), normalizzando spazi
+                azienda_to_use = normalize_spaces(azienda_selected or new_azienda_input)
+                values_map["Azienda"] = azienda_to_use
 
                 # art_kart obbligatorio pulito
                 art_val = to_clean_str(values_map.get("art_kart", ""))
@@ -651,9 +656,14 @@ with right:
                         new_row[k] = to_clean_str(values_map.get(k, ""))
                     df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
 
-                # aggiorna cache aziende (idempotenza)
+                # aggiorna cache aziende (idempotenza se nuovo valore)
                 st.session_state["df"] = df_local
-                refresh_unique_aziende_cache()
+                if values_map.get("Azienda"):
+                    if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
+                        st.session_state["unique_aziende"] = sorted(
+                            st.session_state.get("unique_aziende", []) + [values_map["Azienda"]],
+                            key=lambda x: x.lower()
+                        )
                 st.session_state["data_version"] += 1
 
                 if result == "updated":
