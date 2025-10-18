@@ -25,7 +25,7 @@ SCOPES = [
 ]
 REDIRECT_URI = "http://localhost"
 
-# Origine (lettura/scrittura) — deve puntare al gid=560544700 nei secrets
+# Origine (lettura/scrittura) — secrets deve puntare a gid=560544700
 SOURCE_URL = st.secrets["sheet"]["url"]
 
 # Colonne scrivibili (SOLO queste)
@@ -48,7 +48,7 @@ RESULT_COLS = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
 # HELPERS
 # =========================================
 def to_clean_str(x):
-    """Converte in stringa pulita (niente .0 sugli interi, niente 'nan')."""
+    """Converte in stringa pulita (no .0 sugli interi, no 'nan')."""
     if x is None:
         return ""
     try:
@@ -189,22 +189,34 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     return df
 
 # =========================================
-# SCRITTURA: utilities
+# SCRITTURA: utilities (robuste)
 # =========================================
 def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
-    """Verifica/aggiunge colonne richieste nell’header. Ritorna {colname: col_index(1-based)}."""
-    header = ws.row_values(1)
-    header = [h.strip() for h in header] if header else []
-    col_map = {name: i + 1 for i, name in enumerate(header)}
-    added = False
+    """
+    Ritorna mappa {col: idx(1-based)}. Cerca le intestazioni in modo case-insensitive e trim;
+    se non trova la colonna la aggiunge in coda col nome esatto richiesto.
+    """
+    header = ws.row_values(1) or []
+    header = [h if h is not None else "" for h in header]
+    norm = [h.strip().lower() for h in header]
+    col_map = {}
+
+    changed = False
     for col in required_cols:
-        if col not in col_map:
-            header.append(col)
+        col_norm = col.strip().lower()
+        if col_norm in norm:
+            idx = norm.index(col_norm) + 1
+            col_map[col] = idx
+        else:
+            header.append(col)      # aggiungi la colonna col nome esatto
+            norm.append(col_norm)
             col_map[col] = len(header)
-            added = True
-    if added:
+            changed = True
+
+    if changed:
         rng = f"A1:{rowcol_to_a1(1, len(header))}"
         ws.update(rng, [header], value_input_option="USER_ENTERED")
+
     return col_map
 
 def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kart: str) -> int | None:
@@ -219,8 +231,12 @@ def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kar
             return i
     return None
 
-def upsert_in_source(ws: gspread.Worksheet, df_local: pd.DataFrame, values_map: dict, art_desart_current: str) -> str:
-    """Scrive SOLO WRITE_COLS nell’origine: se art_kart esiste → sovrascrive; altrimenti appende."""
+def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current: str) -> str:
+    """
+    Scrive SOLO WRITE_COLS nell’origine:
+    - se art_kart esiste → sovrascrive (senza conferma)
+    - altrimenti appende una nuova riga con solo le WRITE_COLS
+    """
     col_map = ensure_headers(ws, WRITE_COLS)
 
     art_val = to_clean_str(values_map.get("art_kart", ""))
@@ -233,26 +249,14 @@ def upsert_in_source(ws: gspread.Worksheet, df_local: pd.DataFrame, values_map: 
     row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
 
     if row_number is not None:
-        confirm_key = "confirm_overwrite"
-        if not st.session_state.get(confirm_key, False):
-            st.warning("⚠️ Record con lo stesso 'art_kart' già presente. Confermi di sovrascrivere SOLO le colonne specificate?")
-            if st.button("Confermo sovrascrittura"):
-                st.session_state[confirm_key] = True
-                st.experimental_rerun()
-            return "await_confirm"
-
-        # Batch update: tutte le colonne in un colpo
-        data = []
+        # aggiorna cella per cella per compatibilità massima
         for col in WRITE_COLS:
             c_idx = col_map[col]
             a1 = rowcol_to_a1(row_number, c_idx)
-            data.append({"range": a1, "values": [[to_clean_str(values_map.get(col, ""))]]})
-        ws.batch_update(data, value_input_option="USER_ENTERED")
-
-        st.session_state.pop(confirm_key, None)
+            ws.update(a1, [[to_clean_str(values_map.get(col, ""))]], value_input_option="USER_ENTERED")
         return "updated"
 
-    # Append: crea nuova riga lunga quanto l'header, valorizza solo le WRITE_COLS
+    # append nuova riga
     header = ws.row_values(1) or []
     full_len = len(header)
     new_row = ["" for _ in range(full_len)]
@@ -263,7 +267,7 @@ def upsert_in_source(ws: gspread.Worksheet, df_local: pd.DataFrame, values_map: 
     return "added"
 
 # =========================================
-# APP STATE & FILTRI
+# APP STATE & DIAGNOSTICA
 # =========================================
 st.sidebar.header("🔐 Autenticazione Google")
 creds = get_creds()
@@ -317,6 +321,9 @@ if "df" not in st.session_state:
 
 df = st.session_state["df"]
 
+# =========================================
+# FILTRI
+# =========================================
 st.sidebar.header("🎛️ Filtri")
 f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. 12345", key="f_code")
 f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero", key="f_desc")
@@ -454,10 +461,7 @@ with right:
 
                 # upsert SOLO sulle 9 colonne, art_desart_precedente = art_desart attuale
                 art_desart_current = to_clean_str(full_row.get("art_desart", ""))
-                result = upsert_in_source(ws, df, values_map, art_desart_current)
-                if result == "await_confirm":
-                    st.warning("Conferma richiesta: premi 'Confermo sovrascrittura'.")
-                    st.stop()
+                result = upsert_in_source(ws, values_map, art_desart_current)
 
                 # ✅ aggiorna DB locale (solo WRITE_COLS)
                 df_local = st.session_state["df"].copy()
@@ -486,6 +490,7 @@ with right:
                 elif result == "added":
                     st.success("✅ Nuova riga aggiunta. UI aggiornata subito.")
 
+                st.toast("Salvato!", icon="✅")
                 st.rerun()
 
             except Exception as e:
