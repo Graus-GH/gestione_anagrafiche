@@ -80,6 +80,12 @@ def parse_sheet_url(url: str):
         gid = parsed.fragment.split("gid=")[1]
     return spreadsheet_id, (gid or "0")
 
+def unique_nonempty_sorted(df: pd.DataFrame, col: str) -> list[str]:
+    """Ritorna i valori univoci non vuoti della colonna, ordinati alfabeticamente."""
+    vals = [to_clean_str(v) for v in (df[col] if col in df.columns else [])]
+    vals = [v for v in vals if v.strip() != ""]
+    return sorted(list(dict.fromkeys(vals)))
+
 # =========================================
 # OAUTH
 # =========================================
@@ -327,7 +333,7 @@ df = st.session_state["df"]
 st.sidebar.header("🎛️ Filtri")
 f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. 12345", key="f_code")
 f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero", key="f_desc")
-reparti = sorted([v for v in df["art_kmacro"].dropna().unique() if str(v).strip() != ""])
+reparti = sorted([v for v in df["art_kmacro"].dropna().unique() if str(v).strip() != ""]) if "art_kmacro" in df.columns else []
 f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti, key="f_reps")
 pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0, key="f_pres")
 f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero", key="f_aff")
@@ -338,7 +344,8 @@ if f_code.strip():
 if f_desc.strip():
     mask &= df["art_desart"].str.contains(re.escape(f_desc.strip()), case=False, na=False)
 if f_reps:
-    mask &= df["art_kmacro"].isin(f_reps)
+    if "art_kmacro" in df.columns:
+        mask &= df["art_kmacro"].isin(f_reps)
 if pres == "Presente":
     mask &= df["DescrizioneAffinata"].str.strip() != ""
 elif pres == "Assente":
@@ -406,8 +413,58 @@ with right:
         if full_row is None:
             full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
-        # editor verticale: SOLO le 9 colonne scrivibili
-        pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in WRITE_COLS]
+        # ---------------------------
+        # Campo "Azienda" con dropdown + ricerca + "aggiungi nuovo"
+        # ---------------------------
+        azienda_attuale = to_clean_str(full_row.get("Azienda", ""))
+        opzioni_azienda = unique_nonempty_sorted(df, "Azienda")
+        # garantisci che il valore attuale sia selezionabile anche se non presente in lista
+        if azienda_attuale and azienda_attuale not in opzioni_azienda:
+            opzioni_azienda = [azienda_attuale] + opzioni_azienda
+
+        LABEL_NUOVO = "➕ Aggiungi nuovo valore…"
+        opzioni_azienda_plus = opzioni_azienda + [LABEL_NUOVO]
+
+        st.markdown("**Azienda**")
+        sel_idx = 0
+        if azienda_attuale and azienda_attuale in opzioni_azienda_plus:
+            sel_idx = opzioni_azienda_plus.index(azienda_attuale)
+
+        azienda_scelta = st.selectbox(
+            "Seleziona o inizia a digitare per cercare",
+            options=opzioni_azienda_plus,
+            index=sel_idx if sel_idx < len(opzioni_azienda_plus) else 0,
+            key=f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
+            help="Digitando filtri l'elenco. Scegli '➕ Aggiungi nuovo valore…' per inserirne uno non presente.",
+        )
+
+        azienda_finale = azienda_scelta
+        if azienda_scelta == LABEL_NUOVO:
+            azienda_finale = st.text_input(
+                "Nuovo valore Azienda",
+                value="",
+                placeholder="Es. Cantina Esempio S.r.l.",
+                key=f"azienda_new_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
+            ).strip()
+
+        # Avviso se stai modificando un valore esistente usato altrove
+        if azienda_attuale and azienda_finale and azienda_finale != azienda_attuale:
+            try:
+                x_prodotti = int((df["Azienda"].map(to_clean_str) == azienda_attuale).sum())
+            except Exception:
+                x_prodotti = 0
+            if x_prodotti > 0:
+                st.warning(
+                    f"⚠️ Attenzione: stai modificando il valore **Azienda** da "
+                    f"**“{azienda_attuale}”** a **“{azienda_finale}”**. "
+                    f"Il valore attuale è presente in **{x_prodotti}** prodotti."
+                )
+
+        st.divider()
+
+        # Editor verticale: SOLO le colonne scrivibili tranne "Azienda" (gestita sopra)
+        editable_cols = [c for c in WRITE_COLS if c != "Azienda"]
+        pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in editable_cols]
         detail_table = pd.DataFrame(pairs, columns=["Campo", "Valore"])
         edited_detail = st.data_editor(
             detail_table,
@@ -435,15 +492,25 @@ with right:
 
         if st.button("💾 Salva nell'origine"):
             try:
-                # mappa valori da editor (solo WRITE_COLS)
+                # mappa valori da editor (solo WRITE_COLS tranne 'Azienda')
                 values_map = {}
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
-                    if campo and campo in WRITE_COLS:
+                    if campo and campo in editable_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
+                # Validazione 'Azienda' dal selettore / nuovo input
+                azienda_finale_clean = to_clean_str(azienda_finale)
+                if azienda_finale == LABEL_NUOVO:
+                    st.error("Inserisci il nuovo valore per 'Azienda'.")
+                    st.stop()
+                if azienda_finale_clean == "":
+                    # se era vuoto ed era vuoto anche prima, lascio vuoto; altrimenti consigliare
+                    st.info("Campo 'Azienda' vuoto. Conferma il salvataggio se desiderato.")
+                values_map["Azienda"] = azienda_finale_clean
+
                 # art_kart obbligatorio pulito
-                art_val = to_clean_str(values_map.get("art_kart", ""))
+                art_val = to_clean_str(values_map.get("art_kart", "") or full_row.get("art_kart", ""))
                 if not art_val:
                     st.error("Campo 'art_kart' obbligatorio.")
                     st.stop()
@@ -459,7 +526,7 @@ with right:
                 if ws is None:
                     raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
 
-                # upsert SOLO sulle 9 colonne, art_desart_precedente = art_desart attuale
+                # upsert SOLO sulle WRITE_COLS, art_desart_precedente = art_desart attuale
                 art_desart_current = to_clean_str(full_row.get("art_desart", ""))
                 result = upsert_in_source(ws, values_map, art_desart_current)
 
