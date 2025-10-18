@@ -48,7 +48,6 @@ RESULT_COLS = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
 # HELPERS
 # =========================================
 def to_clean_str(x):
-    """Converte in stringa pulita (no .0 sugli interi, no 'nan')."""
     if x is None:
         return ""
     try:
@@ -81,7 +80,6 @@ def parse_sheet_url(url: str):
     return spreadsheet_id, (gid or "0")
 
 def unique_nonempty_sorted(df: pd.DataFrame, col: str) -> list[str]:
-    """Ritorna i valori univoci non vuoti della colonna, ordinati alfabeticamente."""
     vals = [to_clean_str(v) for v in (df[col] if col in df.columns else [])]
     vals = [v for v in vals if v.strip() != ""]
     return sorted(list(dict.fromkeys(vals)))
@@ -180,11 +178,9 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
         df = pd.DataFrame(df)
     df = df.dropna(how="all")
 
-    # pulizia stringhe
     for col in df.columns:
         df[col] = df[col].map(to_clean_str)
 
-    # garantisci colonne per UI/scrittura
     for c in set(RESULT_COLS + WRITE_COLS):
         if c not in df.columns:
             df[c] = ""
@@ -195,13 +191,9 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     return df
 
 # =========================================
-# SCRITTURA: utilities (robuste)
+# SCRITTURA utilities
 # =========================================
 def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
-    """
-    Ritorna mappa {col: idx(1-based)}. Cerca le intestazioni in modo case-insensitive e trim;
-    se non trova la colonna la aggiunge in coda col nome esatto richiesto.
-    """
     header = ws.row_values(1) or []
     header = [h if h is not None else "" for h in header]
     norm = [h.strip().lower() for h in header]
@@ -214,7 +206,7 @@ def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
             idx = norm.index(col_norm) + 1
             col_map[col] = idx
         else:
-            header.append(col)      # aggiungi la colonna col nome esatto
+            header.append(col)
             norm.append(col_norm)
             col_map[col] = len(header)
             changed = True
@@ -226,23 +218,17 @@ def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
     return col_map
 
 def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kart: str) -> int | None:
-    """Trova la riga reale nel foglio cercando art_kart nella sua colonna (match esatto)."""
     col_idx = col_map.get("art_kart")
     if not col_idx:
         return None
     art_val = to_clean_str(art_kart)
-    col_vals = ws.col_values(col_idx)  # include header
-    for i, v in enumerate(col_vals[1:], start=2):  # dati da riga 2
+    col_vals = ws.col_values(col_idx)
+    for i, v in enumerate(col_vals[1:], start=2):
         if to_clean_str(v) == art_val:
             return i
     return None
 
 def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current: str) -> str:
-    """
-    Scrive SOLO WRITE_COLS nell’origine:
-    - se art_kart esiste → sovrascrive (senza conferma)
-    - altrimenti appende una nuova riga con solo le WRITE_COLS
-    """
     col_map = ensure_headers(ws, WRITE_COLS)
 
     art_val = to_clean_str(values_map.get("art_kart", ""))
@@ -255,14 +241,12 @@ def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current
     row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
 
     if row_number is not None:
-        # aggiorna cella per cella per compatibilità massima
         for col in WRITE_COLS:
             c_idx = col_map[col]
             a1 = rowcol_to_a1(row_number, c_idx)
             ws.update(a1, [[to_clean_str(values_map.get(col, ""))]], value_input_option="USER_ENTERED")
         return "updated"
 
-    # append nuova riga
     header = ws.row_values(1) or []
     full_len = len(header)
     new_row = ["" for _ in range(full_len)]
@@ -272,6 +256,43 @@ def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current
     ws.append_row(new_row, value_input_option="USER_ENTERED")
     return "added"
 
+def bulk_replace_in_column(ws: gspread.Worksheet, column_name: str, old_value: str, new_value: str) -> int:
+    """
+    Rinomina globalmente in colonna `column_name`: tutte le celle == old_value diventano new_value.
+    Restituisce il conteggio delle sostituzioni effettuate.
+    """
+    col_map = ensure_headers(ws, [column_name])
+    c_idx = col_map[column_name]
+
+    col_vals = ws.col_values(c_idx)  # include header
+    if not col_vals:
+        return 0
+
+    header = col_vals[0] if len(col_vals) > 0 else column_name
+    body = col_vals[1:]
+
+    old_clean = to_clean_str(old_value)
+    new_clean = to_clean_str(new_value)
+
+    replaced = 0
+    new_body = []
+    for v in body:
+        vv = to_clean_str(v)
+        if vv == old_clean:
+            new_body.append(new_clean)
+            replaced += 1
+        else:
+            new_body.append(vv)
+
+    # Aggiorna solo il corpo (dalla riga 2 in giù)
+    if len(new_body) > 0:
+        start_a1 = rowcol_to_a1(2, c_idx)
+        end_a1 = rowcol_to_a1(len(new_body) + 1, c_idx)
+        rng = f"{start_a1}:{end_a1}"
+        ws.update(rng, [[x] for x in new_body], value_input_option="USER_ENTERED")
+
+    return replaced
+
 # =========================================
 # APP STATE & DIAGNOSTICA
 # =========================================
@@ -280,7 +301,6 @@ creds = get_creds()
 if not creds:
     st.stop()
 
-# 🧪 Diagnostica (email OAuth + prova scrittura)
 def get_current_user_email(gc) -> str | None:
     try:
         r = gc.session.get("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)")
@@ -314,7 +334,6 @@ with st.sidebar.expander("🧪 Diagnostica scrittura", expanded=False):
     except Exception as e:
         st.error(f"Diagnostica: {e}")
 
-# DB locale + versione per refresh veloce
 if "data_version" not in st.session_state:
     st.session_state["data_version"] = 0
 if "df" not in st.session_state:
@@ -356,7 +375,7 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # =========================================
-# MAIN: SX risultati, DX dettaglio
+# MAIN
 # =========================================
 left, right = st.columns([2, 1], gap="large")
 
@@ -413,56 +432,93 @@ with right:
         if full_row is None:
             full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
-        # ---------------------------
-        # Campo "Azienda" con dropdown + ricerca + "aggiungi nuovo"
-        # ---------------------------
+        # ----- Stato locale per toggle editing di "Azienda"
+        art_key = to_clean_str(full_row.get("art_kart", ""))
+        toggle_key = f"edit_azienda_{art_key}"
+        if toggle_key not in st.session_state:
+            st.session_state[toggle_key] = False
+
         azienda_attuale = to_clean_str(full_row.get("Azienda", ""))
         opzioni_azienda = unique_nonempty_sorted(df, "Azienda")
-        # garantisci che il valore attuale sia selezionabile anche se non presente in lista
-        if azienda_attuale and azienda_attuale not in opzioni_azienda:
-            opzioni_azienda = [azienda_attuale] + opzioni_azienda
-
-        LABEL_NUOVO = "➕ Aggiungi nuovo valore…"
-        opzioni_azienda_plus = opzioni_azienda + [LABEL_NUOVO]
+        suggerimenti_txt = ", ".join(opzioni_azienda[:15]) + ("…" if len(opzioni_azienda) > 15 else "")
 
         st.markdown("**Azienda**")
-        sel_idx = 0
-        if azienda_attuale and azienda_attuale in opzioni_azienda_plus:
-            sel_idx = opzioni_azienda_plus.index(azienda_attuale)
+        colA, colB = st.columns([1, 1])
+        with colA:
+            if st.button(("✏️ Cambia valore" if not st.session_state[toggle_key] else "🔒 Blocca valore"), key=f"btn_toggle_{art_key}"):
+                st.session_state[toggle_key] = not st.session_state[toggle_key]
+                st.experimental_rerun()
+        with colB:
+            st.caption(f"Suggerimenti: {suggerimenti_txt}" if suggerimenti_txt else "—")
 
-        azienda_scelta = st.selectbox(
-            "Seleziona o inizia a digitare per cercare",
-            options=opzioni_azienda_plus,
-            index=sel_idx if sel_idx < len(opzioni_azienda_plus) else 0,
-            key=f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
-            help="Digitando filtri l'elenco. Scegli '➕ Aggiungi nuovo valore…' per inserirne uno non presente.",
+        # Campo di inserimento/ricerca libero (user-friendly)
+        azienda_candidate_key = f"azienda_candidate_{art_key}_{st.session_state['data_version']}"
+        default_val = azienda_attuale
+        azienda_candidate = st.text_input(
+            "Scrivi o incolla un valore (oppure usa il menu sotto)",
+            value=default_val,
+            disabled=not st.session_state[toggle_key],
+            key=azienda_candidate_key,
+        ).strip()
+
+        # Menu per scegliere rapidamente un valore esistente (facoltativo)
+        sel_idx = opzioni_azienda.index(azienda_attuale) if azienda_attuale in opzioni_azienda else 0
+        scelta = st.selectbox(
+            "Scegli da elenco (facoltativo)",
+            options=(["— (nessuna scelta) —"] + opzioni_azienda),
+            index=0,
+            disabled=not st.session_state[toggle_key],
+            key=f"azienda_pick_{art_key}_{st.session_state['data_version']}",
+            help="Se selezioni un valore, sostituisce il testo nel campo sopra.",
         )
+        if st.session_state.get(toggle_key) and scelta != "— (nessuna scelta) —":
+            azienda_candidate = scelta  # override con la scelta rapida
 
-        azienda_finale = azienda_scelta
-        if azienda_scelta == LABEL_NUOVO:
-            azienda_finale = st.text_input(
-                "Nuovo valore Azienda",
-                value="",
-                placeholder="Es. Cantina Esempio S.r.l.",
-                key=f"azienda_new_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
-            ).strip()
+        # Stato messaggi/azioni
+        creating_new = (azienda_candidate != "" and azienda_candidate not in opzioni_azienda)
+        changing_existing = (azienda_candidate != "" and azienda_candidate != azienda_attuale)
 
-        # Avviso se stai modificando un valore esistente usato altrove
-        if azienda_attuale and azienda_finale and azienda_finale != azienda_attuale:
-            try:
+        if st.session_state.get(toggle_key):
+            if creating_new:
+                st.info("Stai per creare un **nuovo valore** di Azienda.")
+            if changing_existing and azienda_attuale:
                 x_prodotti = int((df["Azienda"].map(to_clean_str) == azienda_attuale).sum())
-            except Exception:
-                x_prodotti = 0
-            if x_prodotti > 0:
                 st.warning(
                     f"⚠️ Attenzione: stai modificando il valore **Azienda** da "
-                    f"**“{azienda_attuale}”** a **“{azienda_finale}”**. "
+                    f"**“{azienda_attuale}”** a **“{azienda_candidate}”**. "
                     f"Il valore attuale è presente in **{x_prodotti}** prodotti."
                 )
+                # Bottone di rinomina globale (old -> new) su tutto il foglio
+                if st.button("🔁 Rinomina globalmente tutte le occorrenze", key=f"bulk_rename_{art_key}"):
+                    try:
+                        creds_json = json.loads(Credentials.from_authorized_user_info(
+                            st.session_state["oauth_token"], SCOPES
+                        ).to_json())
+                        gc = get_gc(creds_json)
+                        spreadsheet_id, gid = parse_sheet_url(SOURCE_URL)
+                        ws = next((w for w in gc.open_by_key(spreadsheet_id).worksheets() if str(w.id) == str(gid)), None)
+                        if ws is None:
+                            raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
+
+                        replaced = bulk_replace_in_column(ws, "Azienda", azienda_attuale, azienda_candidate)
+
+                        # aggiorna df locale
+                        df_local = st.session_state["df"].copy()
+                        if "Azienda" in df_local.columns:
+                            df_local["Azienda"] = df_local["Azienda"].map(to_clean_str).replace({to_clean_str(azienda_attuale): to_clean_str(azienda_candidate)})
+                        st.session_state["df"] = df_local
+                        st.session_state["data_version"] += 1
+
+                        st.success(f"✅ Rinomina globale completata: aggiornate {replaced} occorrenze.")
+                        st.session_state[toggle_key] = False
+                        st.experimental_rerun()
+                    except Exception as e:
+                        st.error("❌ Errore durante la rinomina globale:")
+                        st.exception(e)
 
         st.divider()
 
-        # Editor verticale: SOLO le colonne scrivibili tranne "Azienda" (gestita sopra)
+        # Editor verticale: tutte le colonne scrivibili tranne "Azienda" (gestita sopra)
         editable_cols = [c for c in WRITE_COLS if c != "Azienda"]
         pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in editable_cols]
         detail_table = pd.DataFrame(pairs, columns=["Campo", "Valore"])
@@ -475,7 +531,7 @@ with right:
                 "Campo": st.column_config.TextColumn(disabled=True),
                 "Valore": st.column_config.TextColumn(),
             },
-            key=f"detail_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
+            key=f"detail_{art_key}_{st.session_state['data_version']}",
         )
 
         st.caption("Valore attuale di 'art_desart' (non modificabile, copiato in 'art_desart_precedente' al salvataggio):")
@@ -490,33 +546,35 @@ with right:
 
         st.success("Salvataggio: scrive **solo** le colonne specificate, direttamente nell'origine (gid=560544700).")
 
-        if st.button("💾 Salva nell'origine"):
+        # ------- SALVA (solo la riga) -------
+        if st.button("💾 Salva questa riga nell'origine"):
             try:
-                # mappa valori da editor (solo WRITE_COLS tranne 'Azienda')
                 values_map = {}
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
                     if campo and campo in editable_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # Validazione 'Azienda' dal selettore / nuovo input
-                azienda_finale_clean = to_clean_str(azienda_finale)
-                if azienda_finale == LABEL_NUOVO:
-                    st.error("Inserisci il nuovo valore per 'Azienda'.")
-                    st.stop()
-                if azienda_finale_clean == "":
-                    # se era vuoto ed era vuoto anche prima, lascio vuoto; altrimenti consigliare
-                    st.info("Campo 'Azienda' vuoto. Conferma il salvataggio se desiderato.")
-                values_map["Azienda"] = azienda_finale_clean
+                # determina valore finale per Azienda per questa riga
+                azienda_finale = azienda_attuale
+                if st.session_state.get(toggle_key):
+                    if creating_new:
+                        # Conferma creazione nuovo valore
+                        if not st.checkbox("✅ Confermo: crea nuovo valore 'Azienda'", key=f"confirm_new_{art_key}"):
+                            st.warning("Spunta la conferma per creare il nuovo valore di 'Azienda'.")
+                            st.stop()
+                    if changing_existing or creating_new:
+                        azienda_finale = azienda_candidate
 
-                # art_kart obbligatorio pulito
+                values_map["Azienda"] = to_clean_str(azienda_finale)
+
                 art_val = to_clean_str(values_map.get("art_kart", "") or full_row.get("art_kart", ""))
                 if not art_val:
                     st.error("Campo 'art_kart' obbligatorio.")
                     st.stop()
                 values_map["art_kart"] = art_val
 
-                # client + worksheet origine
+                # client + worksheet
                 creds_json = json.loads(Credentials.from_authorized_user_info(
                     st.session_state["oauth_token"], SCOPES
                 ).to_json())
@@ -526,11 +584,10 @@ with right:
                 if ws is None:
                     raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
 
-                # upsert SOLO sulle WRITE_COLS, art_desart_precedente = art_desart attuale
                 art_desart_current = to_clean_str(full_row.get("art_desart", ""))
                 result = upsert_in_source(ws, values_map, art_desart_current)
 
-                # ✅ aggiorna DB locale (solo WRITE_COLS)
+                # aggiorna df locale
                 df_local = st.session_state["df"].copy()
                 for c in WRITE_COLS:
                     if c not in df_local.columns:
@@ -557,8 +614,9 @@ with right:
                 elif result == "added":
                     st.success("✅ Nuova riga aggiunta. UI aggiornata subito.")
 
+                st.session_state[toggle_key] = False
                 st.toast("Salvato!", icon="✅")
-                st.rerun()
+                st.experimental_rerun()
 
             except Exception as e:
                 st.error("❌ Errore durante il salvataggio:")
