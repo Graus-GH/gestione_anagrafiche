@@ -52,7 +52,6 @@ COPY_FIELDS = ["Azienda", "Prodotto", "gradazione", "annata", "Packaging", "Note
 # HELPERS
 # =========================================
 def to_clean_str(x):
-    """Converte in stringa pulita (no .0 sugli interi, no 'nan')."""
     if x is None:
         return ""
     try:
@@ -448,6 +447,7 @@ with right:
         current_art_kart = to_clean_str(full_row.get("art_kart", ""))
         current_art_desart = to_clean_str(full_row.get("art_desart", ""))
         current_qxc = to_clean_str(full_row.get("QxC", ""))
+        current_azienda = normalize_spaces(full_row.get("Azienda", ""))
 
         # ======= TESTATA compatta: art_desart + QxC =======
         if current_art_desart:
@@ -528,16 +528,23 @@ with right:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-        current_azienda = normalize_spaces(full_row.get("Azienda", ""))
         unique_aziende = st.session_state.get("unique_aziende", [])
-        pending_val = st.session_state.pop("pending_azienda_value", None)
-        preselect_value = normalize_spaces(pending_val or current_azienda)
+        pending_val = st.session_state.get("pending_azienda_value", None)
+
+        # Chiave del widget selectbox Azienda (così possiamo forzare il reset quando arriva un pending)
+        azienda_select_key = f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}"
+
+        # Se ho un pending da copia/creazione, cancello lo stato del widget per far rispettare l'index nuovo
+        if pending_val is not None and azienda_select_key in st.session_state:
+            st.session_state.pop(azienda_select_key, None)
+
+        preselect_value = normalize_spaces(pending_val if pending_val is not None else current_azienda)
 
         options = [""] + unique_aziende
         if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
             options.append(preselect_value)
 
-        # CSS: allineamento orizzontale e riduzione padding per le icon-button
+        # CSS: riduzione padding per le icon-button
         st.markdown(
             """
             <style>
@@ -553,23 +560,25 @@ with right:
                 " ",  # etichetta nascosta
                 options=options,
                 index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
-                key=f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
+                key=azienda_select_key,
                 label_visibility="collapsed",
             )
-
         with c2:
             edit_disabled = not bool(azienda_selected)
-            st.write("")  # micro spacer per allineare
+            st.write("")  # micro spacer
             if st.button("✏️", help="Rinomina globalmente il valore selezionato",
                          disabled=edit_disabled,
                          key=f"btn_edit_{st.session_state['data_version']}"):
                 dialog_rinomina_azienda(azienda_selected)
-
         with c3:
             st.write("")
             if st.button("➕", help="Crea un nuovo valore per Azienda",
                          key=f"btn_add_{st.session_state['data_version']}"):
                 dialog_crea_azienda("")
+
+        # una volta che il widget è stato renderizzato, consumo il pending (così non resetto ad ogni rerun)
+        if pending_val is not None:
+            st.session_state.pop("pending_azienda_value", None)
 
         # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia (icona a destra) =======
         try:
@@ -613,7 +622,7 @@ with right:
 
                     # preseleziona Azienda nel select dedicato
                     if prefill.get("Azienda"):
-                        st.session_state["pending_azienda_value"] = prefill["Azienda"]
+                        st.session_state["pending_azienda_value"] = normalize_spaces(prefill["Azienda"])
 
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
                     st.rerun()
@@ -654,10 +663,13 @@ with right:
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # aggiungi Azienda dal selettore
-                values_map["Azienda"] = normalize_spaces(azienda_selected)
+                # aggiungi Azienda dal selettore (se vuota, preservo quella corrente)
+                selected_clean = normalize_spaces(azienda_selected)
+                if not selected_clean:
+                    selected_clean = current_azienda
+                values_map["Azienda"] = selected_clean
 
-                # art_kart obbligatorio pulito
+                # art_kart obbligatorio
                 art_val = to_clean_str(values_map.get("art_kart", ""))
                 if not art_val:
                     st.error("Campo 'art_kart' obbligatorio.")
@@ -699,25 +711,4 @@ with right:
                 # aggiorna cache aziende (idempotenza se nuovo valore)
                 st.session_state["df"] = df_local
                 if values_map.get("Azienda"):
-                    if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
-                        st.session_state["unique_aziende"] = sorted(
-                            st.session_state.get("unique_aziende", []) + [values_map["Azienda"]],
-                            key=lambda x: x.lower()
-                        )
-                st.session_state["data_version"] += 1
-
-                # pulisco eventuale prefill usato
-                if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
-                    st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
-
-                if result == "updated":
-                    st.success("✅ Riga aggiornata. UI aggiornata subito.")
-                elif result == "added":
-                    st.success("✅ Nuova riga aggiunta. UI aggiornata subito.")
-
-                st.toast("Salvato!", icon="✅")
-                st.rerun()
-
-            except Exception as e:
-                st.error("❌ Errore durante il salvataggio:")
-                st.exception(e)
+                    if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_a_
