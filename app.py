@@ -575,49 +575,50 @@ with right:
                              key=f"btn_add_{st.session_state['data_version']}"):
                     dialog_crea_azienda("")
 
-        # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia campi come icona a destra =======
-        try:
-            base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
-            base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
-            cand = base.sort_values("__sim_current__", ascending=False).head(300).copy()
-            cand["__label__"] = cand.apply(
-                lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim_current__']:.2f})",
-                axis=1
-            )
+    # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia campi come icona a destra =======
+try:
+    base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
+    base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
+    cand = base.sort_values("__sim_current__", ascending=False).head(300).copy()
 
-            st.caption("Suggerimenti simili (ordinati per somiglianza, max 300)")
+    # Prepara etichette e una lista di indici POSIZIONALI (primitivi) per il selectbox
+    labels = [
+        f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({sim:.2f})"
+        for r, sim in zip(cand.to_dict('records'), cand["__sim_current__"])
+    ]
+    idx_options = [-1] + list(range(len(cand)))  # -1 = nessuna scelta
+    label_map = { -1: "— scegli —", **{i: labels[i] for i in range(len(labels))} }
 
-            # Select + icona copia a destra
-            sc1, sc2 = st.columns([0.88, 0.12])
-            with sc1:
-                options = [{"label": "— scegli —", "row": None}] + [
-                    {"label": lbl, "row": cand.iloc[i]} for i, lbl in enumerate(cand["__label__"].tolist())
-                ]
-                sel_obj = st.selectbox(
-                    " ",
-                    options=options,
-                    index=0,
-                    format_func=lambda o: o["label"] if isinstance(o, dict) else str(o),
-                    key=f"simselect_{current_art_kart}_{st.session_state['data_version']}",
-                    label_visibility="collapsed",
-                )
-                sel_row = sel_obj.get("row") if isinstance(sel_obj, dict) else None
+    st.caption("Suggerimenti simili (ordinati per somiglianza, max 300)")
 
-            with sc2:
-                st.write("")
-                if st.button("📋", help="Copia i campi dal selezionato nell’editor (non salva)",
-                             disabled=(sel_row is None),
-                             key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
-                    prefill = {}
-                    for f in COPY_FIELDS:
-                        prefill[f] = to_clean_str(sel_row.get(f, ""))
-                    if "prefill_by_art_kart" not in st.session_state:
-                        st.session_state["prefill_by_art_kart"] = {}
-                    st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
-                    st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
-                    st.rerun()
-        except Exception:
-            pass
+    sc1, sc2 = st.columns([0.88, 0.12])
+    with sc1:
+        sel_idx = st.selectbox(
+            " ",  # etichetta nascosta
+            options=idx_options,
+            index=0,
+            format_func=lambda i: label_map.get(i, str(i)),
+            key=f"simselect_{current_art_kart}_{st.session_state['data_version']}",
+            label_visibility="collapsed",
+        )
+
+    with sc2:
+        st.write("")
+        copy_disabled = (sel_idx == -1)
+        if st.button("📋", help="Copia i campi dal selezionato nell’editor (non salva)",
+                     disabled=copy_disabled,
+                     key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
+            # recupera la riga selezionata SOLO ora
+            sel_row = cand.iloc[sel_idx].to_dict()
+            prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
+            if "prefill_by_art_kart" not in st.session_state:
+                st.session_state["prefill_by_art_kart"] = {}
+            st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
+            st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
+            st.rerun()
+except Exception:
+    pass
+
 
         # =========================
         # Editor per gli altri campi (Azienda è sopra)
