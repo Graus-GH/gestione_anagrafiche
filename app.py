@@ -617,7 +617,7 @@ with right:
             options.append(effective)
 
         azienda_select_key = f"azienda_select_{to_clean_str(current_art_kart)}"  # chiave STABILE
-        # Forzo il valore del widget prima di crearlo così la UI mostra davvero l'effettivo
+        # Forzo il valore del widget PRIMA di crearlo così la UI mostra davvero l'effettivo
         if effective:
             cur_val = st.session_state.get(azienda_select_key, "")
             if norm_key(cur_val) != norm_key(effective):
@@ -746,11 +746,10 @@ with right:
                 df = st.session_state["df"]
                 refresh_unique_aziende_cache()
 
-                # setto l'effectve alla versione salvata (post-refresh) per riflettere in UI
+                # setto l'effective alla versione salvata (post-refresh) per riflettere in UI (non tocco la chiave del widget qui)
                 saved_row = df[df["art_kart"].map(to_clean_str) == art_val]
                 saved_az = normalize_spaces(saved_row.iloc[0]["Azienda"]) if not saved_row.empty else values_map["Azienda"]
                 st.session_state["azienda_effective_by_art"][current_art_kart] = saved_az
-                st.session_state[f"azienda_select_{current_art_kart}"] = saved_az
 
                 # ✅ aggiorna versione per rifare il render
                 st.session_state["data_version"] += 1
