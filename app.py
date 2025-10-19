@@ -443,7 +443,7 @@ with left:
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
 with right:
-    st.subheader("🔎 Dettaglio riga selezionata (editabile)")
+    # (RIMOSSO) st.subheader("🔎 Dettaglio riga selezionata (editabile)")
     if selected_row is None:
         st.info("Seleziona una riga nella tabella a sinistra.")
     else:
@@ -461,7 +461,6 @@ with right:
         # CAMPO "Azienda" – dropdown + icon buttons (✏️ ➕)
         # =========================
 
-        # Dialog per rinomina globale (usa df/SCOPES/SOURCE_URL dal contesto corrente)
         @st.dialog("Rinomina valore «Azienda»")
         def dialog_rinomina_azienda(old_val: str):
             st.write(f"Valore corrente da rinominare: **{old_val}**")
@@ -491,11 +490,8 @@ with right:
 
                         changed = batch_find_replace_azienda(ws, old_clean, new_clean)
 
-                        # refresh df e cache
                         st.cache_data.clear()
                         st.session_state["df"] = load_df(creds_json, SOURCE_URL)
-                        # aggiorna riferimento locale
-                        # (al prossimo rerun df verrà riletto da session_state)
                         refresh_unique_aziende_cache()
                         st.session_state["data_version"] += 1
                         st.session_state["pending_azienda_value"] = new_clean
@@ -511,7 +507,6 @@ with right:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-        # Dialog per creazione nuovo valore
         @st.dialog("Crea nuovo valore «Azienda»")
         def dialog_crea_azienda(default_text: str = ""):
             candidate = st.text_input("Nuovo valore", value=default_text, placeholder="es. Old Group S.p.A.")
@@ -533,7 +528,6 @@ with right:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-        # Pre-selezione sicura (anche dopo creazione)
         current_azienda = normalize_spaces(full_row.get("Azienda", ""))
         unique_aziende = st.session_state.get("unique_aziende", [])
         pending_val = st.session_state.pop("pending_azienda_value", None)
@@ -543,20 +537,19 @@ with right:
         if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
             options.append(preselect_value)
 
-        # Layout compatto: select + icone
         col_select, col_edit, col_add = st.columns([0.8, 0.1, 0.1])
 
         with col_select:
             st.markdown("**Azienda**")
             azienda_selected = st.selectbox(
-                "Seleziona o cerca",
+                "",  # (RIMOSSO) etichetta "Seleziona o cerca"
                 options=options,
                 index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
                 help="Digita per filtrare (type-ahead).",
                 key=f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
+                label_visibility="collapsed",
             )
 
-        # Icon-button stile minimal
         icon_button_style = """
         <style>
         div[data-testid="stHorizontalBlock"] button {
@@ -597,8 +590,9 @@ with right:
             key=f"detail_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
         )
 
-        st.caption("Valore attuale di 'art_desart' (non modificabile, copiato in 'art_desart_precedente' al salvataggio):")
-        st.code(to_clean_str(full_row.get("art_desart", "")))
+        # (RIMOSSI) caption + code su art_desart
+        # st.caption("Valore attuale di 'art_desart' (non modificabile, copiato in 'art_desart_precedente' al salvataggio):")
+        # st.code(to_clean_str(full_row.get("art_desart", "")))
 
         url_img = to_clean_str(full_row.get("URL_immagine", ""))
         if url_img:
@@ -607,77 +601,16 @@ with right:
             except Exception:
                 pass
 
-        st.success("Salvataggio: scrive **solo** le colonne specificate, direttamente nell'origine (gid=560544700).")
+        # (RIMOSSA) nota informativa verde sul salvataggio
+        # st.success("Salvataggio: scrive **solo** le colonne specificate, direttamente nell'origine (gid=560544700).")
 
         if st.button("💾 Salva nell'origine"):
             try:
-                # mappa valori da editor (solo WRITE_COLS tranne Azienda, che prendo dal selettore)
                 values_map = {}
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # aggiungi Azienda dal selettore
                 values_map["Azienda"] = normalize_spaces(azienda_selected)
 
-                # art_kart obbligatorio pulito
-                art_val = to_clean_str(values_map.get("art_kart", ""))
-                if not art_val:
-                    st.error("Campo 'art_kart' obbligatorio.")
-                    st.stop()
-                values_map["art_kart"] = art_val
-
-                # client + worksheet origine
-                creds_json = json.loads(Credentials.from_authorized_user_info(
-                    st.session_state["oauth_token"], SCOPES
-                ).to_json())
-                gc = get_gc(creds_json)
-                spreadsheet_id, gid = parse_sheet_url(SOURCE_URL)
-                ws = next((w for w in gc.open_by_key(spreadsheet_id).worksheets() if str(w.id) == str(gid)), None)
-                if ws is None:
-                    raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
-
-                # upsert SOLO sulle 9 colonne, art_desart_precedente = art_desart attuale
-                art_desart_current = to_clean_str(full_row.get("art_desart", ""))
-                result = upsert_in_source(ws, values_map, art_desart_current)
-
-                # ✅ aggiorna DB locale (solo WRITE_COLS)
-                df_local = st.session_state["df"].copy()
-                for c in WRITE_COLS:
-                    if c not in df_local.columns:
-                        df_local[c] = ""
-                values_map["art_desart_precedente"] = art_desart_current
-
-                row_mask = (df_local["art_kart"].map(to_clean_str) == art_val)
-                if row_mask.any():
-                    idx = df_local.index[row_mask][0]
-                    for k in WRITE_COLS:
-                        df_local.at[idx, k] = to_clean_str(values_map.get(k, ""))
-                else:
-                    new_row = {c: "" for c in df_local.columns}
-                    for k in WRITE_COLS:
-                        new_row[k] = to_clean_str(values_map.get(k, ""))
-                    df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
-
-                # aggiorna cache aziende (idempotenza se nuovo valore)
-                st.session_state["df"] = df_local
-                if values_map.get("Azienda"):
-                    if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
-                        st.session_state["unique_aziende"] = sorted(
-                            st.session_state.get("unique_aziende", []) + [values_map["Azienda"]],
-                            key=lambda x: x.lower()
-                        )
-                st.session_state["data_version"] += 1
-
-                if result == "updated":
-                    st.success("✅ Riga aggiornata. UI aggiornata subito.")
-                elif result == "added":
-                    st.success("✅ Nuova riga aggiunta. UI aggiornata subito.")
-
-                st.toast("Salvato!", icon="✅")
-                st.rerun()
-
-            except Exception as e:
-                st.error("❌ Errore durante il salvataggio:")
-                st.exception(e)
