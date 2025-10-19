@@ -2,6 +2,7 @@
 import json
 import re
 from urllib.parse import urlparse, parse_qs
+from difflib import SequenceMatcher  # >>> NOVITÀ SOMIGLIANZA
 
 import gspread
 import pandas as pd
@@ -43,6 +44,9 @@ WRITE_COLS = [
 
 # Colonne visibili nei risultati
 RESULT_COLS = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
+
+# Campi che verranno copiati dal “simile”
+COPY_FIELDS = ["Prodotto", "gradazione", "annata", "Packaging", "Note", "URL_immagine"]
 
 # =========================================
 # HELPERS
@@ -98,6 +102,14 @@ def parse_sheet_url(url: str):
     if (not gid) and parsed.fragment and parsed.fragment.startswith("gid="):
         gid = parsed.fragment.split("gid=")[1]
     return spreadsheet_id, (gid or "0")
+
+# Similarità semplice tra stringhe (0..1)
+def str_similarity(a: str, b: str) -> float:  # >>> NOVITÀ SOMIGLIANZA
+    a = normalize_spaces(a).lower()
+    b = normalize_spaces(b).lower()
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
 
 # =========================================
 # OAUTH
@@ -457,6 +469,13 @@ with right:
         if full_row is None:
             full_row = pd.Series({c: selected_row.get(c, "") for c in df.columns})
 
+        current_art_kart = to_clean_str(full_row.get("art_kart", ""))
+        current_art_desart = to_clean_str(full_row.get("art_desart", ""))
+
+        # ======= TESTATA con art_desart corrente =======  # >>> NOVITÀ SOMIGLIANZA
+        if current_art_desart:
+            st.markdown(f"### {current_art_desart}")
+
         # =========================
         # CAMPO "Azienda" – dropdown + icon buttons (✏️ ➕)
         # =========================
@@ -577,11 +596,62 @@ with right:
                          key=f"btn_add_{st.session_state['data_version']}"):
                 dialog_crea_azienda("")
 
+        # ======= SUGGERIMENTI ART_DESART SIMILI + COPIA CAMPI =======  # >>> NOVITÀ SOMIGLIANZA
+        # costruiamo i 10 articoli più simili (escludo lo stesso art_kart)
+        try:
+            others = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
+            others["__sim__"] = others["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
+            top_sim = (
+                others.sort_values("__sim__", ascending=False)
+                .head(10)
+                .copy()
+            )
+            # etichette leggibili e valore = art_kart
+            top_sim["__label__"] = top_sim.apply(
+                lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim__']:.2f})",
+                axis=1
+            )
+            sim_options = [""] + top_sim["__label__"].tolist()
+            st.markdown("**Suggerimenti simili (per art_desart):**")
+            sel_label = st.selectbox(
+                "Scegli un articolo simile per copiare i campi (non salva):",
+                options=sim_options,
+                index=0,
+                key=f"simselect_{current_art_kart}_{st.session_state['data_version']}",
+            )
+            sel_row = None
+            if sel_label:
+                sel_row = top_sim[top_sim["__label__"] == sel_label].iloc[0] if not top_sim.empty else None
+
+            # quando clicco, preparo un prefill per l'editor e rerun
+            if st.button("↪️ Copia campi dal selezionato", disabled=(sel_row is None),
+                         key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
+                prefill = {}
+                for f in COPY_FIELDS:
+                    prefill[f] = to_clean_str(sel_row.get(f, ""))
+                # salvo in stato per questa riga
+                if "prefill_by_art_kart" not in st.session_state:
+                    st.session_state["prefill_by_art_kart"] = {}
+                st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
+                st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
+                st.rerun()
+        except Exception:
+            pass
+
         # =========================
         # Editor per gli altri campi (escludo 'Azienda' perché gestito sopra)
         # =========================
         other_cols = [c for c in WRITE_COLS if c != "Azienda"]
         pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in other_cols]
+
+        # applica eventuale prefill da “simile”  # >>> NOVITÀ SOMIGLIANZA
+        prefill_map = (st.session_state.get("prefill_by_art_kart", {}) or {}).get(current_art_kart, {})
+        if prefill_map:
+            for p in pairs:
+                campo = p["Campo"]
+                if campo in prefill_map and prefill_map[campo] != "":
+                    p["Valore"] = prefill_map[campo]
+
         detail_table = pd.DataFrame(pairs, columns=["Campo", "Valore"])
         edited_detail = st.data_editor(
             detail_table,
@@ -594,9 +664,6 @@ with right:
             },
             key=f"detail_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
         )
-
-        # (RIMOSSI: caption + code preview di art_desart)
-        # (RIMOSSO: messaggio verde pre-salvataggio)
 
         if st.button("💾 Salva nell'origine"):
             try:
@@ -658,6 +725,10 @@ with right:
                             key=lambda x: x.lower()
                         )
                 st.session_state["data_version"] += 1
+
+                # pulisco eventuale prefill usato
+                if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
+                    st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
 
                 if result == "updated":
                     st.success("✅ Riga aggiornata. UI aggiornata subito.")
