@@ -26,7 +26,7 @@ SCOPES = [
 ]
 REDIRECT_URI = "http://localhost"
 
-# Origine (lettura/scrittura) — secrets deve puntare a gid=560544700
+# Origine (lettura/scrittura)
 SOURCE_URL = st.secrets["sheet"]["url"]
 
 # Colonne scrivibili (SOLO queste)
@@ -45,7 +45,7 @@ WRITE_COLS = [
 # Colonne visibili nei risultati
 RESULT_COLS = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
 
-# Campi copiati dal “simile”
+# Campi copiati dal “simile” (inclusa Azienda)
 COPY_FIELDS = ["Azienda", "Prodotto", "gradazione", "annata", "Packaging", "Note", "URL_immagine"]
 
 # =========================================
@@ -361,6 +361,10 @@ def refresh_unique_aziende_cache():
 if "unique_aziende" not in st.session_state:
     refresh_unique_aziende_cache()
 
+# --- STATE PER PRESELEZIONE AZIENDA PER RIGA ---
+if "pending_azienda_by_art" not in st.session_state:
+    st.session_state["pending_azienda_by_art"] = {}  # { art_kart: valore_azienda_norm }
+
 # =========================================
 # FILTRI
 # =========================================
@@ -389,7 +393,7 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # =========================================
-# MAIN: SX risultati, DX dettaglio (titoli rimossi per spazio)
+# MAIN: SX risultati, DX dettaglio
 # =========================================
 left, right = st.columns([2, 1], gap="large")
 
@@ -458,7 +462,7 @@ with right:
             )
 
         # =========================
-        # CAMPO "Azienda" – select compatta + icon-buttons allineati
+        # CAMPO "Azienda" – select compatta + icon-buttons
         # =========================
 
         @st.dialog("Rinomina valore «Azienda»")
@@ -494,7 +498,7 @@ with right:
                         st.session_state["df"] = load_df(creds_json, SOURCE_URL)
                         refresh_unique_aziende_cache()
                         st.session_state["data_version"] += 1
-                        st.session_state["pending_azienda_value"] = new_clean
+                        st.session_state["pending_azienda_by_art"][current_art_kart] = new_clean
 
                         st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
                         st.toast("Azienda rinominata globalmente", icon="✅")
@@ -521,16 +525,17 @@ with right:
                             st.session_state.get("unique_aziende", []) + [cand],
                             key=lambda x: x.lower()
                         )
-                    st.session_state["pending_azienda_value"] = cand
+                    st.session_state["pending_azienda_by_art"][current_art_kart] = cand
                     st.toast(f"✅ Creato nuovo valore: {cand}")
                     st.rerun()
             with col2:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-        # --- PRESELEZIONE AZIENDA con chiave dinamica (hash) ---
+        # --- PRESELEZIONE AZIENDA con chiave dinamica PER RIGA ---
         unique_aziende = st.session_state.get("unique_aziende", [])
-        pending_val = st.session_state.get("pending_azienda_value", None)
+        pending_map = st.session_state.get("pending_azienda_by_art", {})
+        pending_val = pending_map.get(current_art_kart, None)
         preselect_value = normalize_spaces(pending_val if pending_val is not None else current_azienda)
 
         options = [""] + unique_aziende
@@ -538,8 +543,7 @@ with right:
             options.append(preselect_value)
 
         azienda_select_key = (
-            f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_"
-            f"{st.session_state['data_version']}_"
+            f"azienda_select_{to_clean_str(current_art_kart)}_"
             f"{abs(hash(norm_key(preselect_value)))%100000}"
         )
 
@@ -566,17 +570,16 @@ with right:
             st.write("")
             if st.button("✏️", help="Rinomina globalmente il valore selezionato",
                          disabled=edit_disabled,
-                         key=f"btn_edit_{st.session_state['data_version']}"):
+                         key=f"btn_edit_{current_art_kart}"):
                 dialog_rinomina_azienda(azienda_selected)
         with c3:
             st.write("")
-            if st.button("➕", help="Crea un nuovo valore per Azienda",
-                         key=f"btn_add_{st.session_state['data_version']}"):
+            if st.button("➕", help="Crea un nuovo valore per Azienda", key=f"btn_add_{current_art_kart}"):
                 dialog_crea_azienda("")
 
-        # Consuma pending, così la chiave non cambia ad ogni rerun
-        if "pending_azienda_value" in st.session_state:
-            st.session_state.pop("pending_azienda_value", None)
+        # Consuma il pending SOLO per questa riga
+        if current_art_kart in st.session_state["pending_azienda_by_art"]:
+            st.session_state["pending_azienda_by_art"].pop(current_art_kart, None)
 
         # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia (icona a destra) =======
         try:
@@ -600,7 +603,7 @@ with right:
                     options=idx_options,
                     index=0,
                     format_func=lambda i: label_map.get(i, str(i)),
-                    key=f"simselect_{current_art_kart}_{st.session_state['data_version']}",
+                    key=f"simselect_{current_art_kart}",
                     label_visibility="collapsed",
                 )
 
@@ -609,19 +612,18 @@ with right:
                 copy_disabled = (sel_idx == -1)
                 if st.button("📋", help="Copia i campi dal selezionato nell’editor (non salva)",
                              disabled=copy_disabled,
-                             key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
+                             key=f"btn_copy_{current_art_kart}"):
                     sel_row = cand.iloc[sel_idx].to_dict()
                     prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
 
+                    # salva prefill degli altri campi per QUESTA riga
                     if "prefill_by_art_kart" not in st.session_state:
                         st.session_state["prefill_by_art_kart"] = {}
                     st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
 
+                    # preseleziona Azienda SOLO per QUESTA riga
                     if prefill.get("Azienda"):
-                        st.session_state["pending_azienda_value"] = normalize_spaces(prefill["Azienda"])
-
-                    # Forza refresh generale delle chiavi
-                    st.session_state["data_version"] += 1
+                        st.session_state["pending_azienda_by_art"][current_art_kart] = normalize_spaces(prefill["Azienda"])
 
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
                     st.rerun()
