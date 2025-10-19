@@ -2,7 +2,7 @@
 import json
 import re
 from urllib.parse import urlparse, parse_qs
-from difflib import SequenceMatcher  # Similarità
+from difflib import SequenceMatcher
 
 import gspread
 import pandas as pd
@@ -45,7 +45,7 @@ WRITE_COLS = [
 # Colonne visibili nei risultati
 RESULT_COLS = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
 
-# Campi copiati dal “simile” (inclusa Azienda)
+# Campi copiati dal “simile”
 COPY_FIELDS = ["Azienda", "Prodotto", "gradazione", "annata", "Packaging", "Note", "URL_immagine"]
 
 # =========================================
@@ -528,23 +528,21 @@ with right:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
+        # --- PRESELEZIONE AZIENDA con chiave dinamica (hash) ---
         unique_aziende = st.session_state.get("unique_aziende", [])
         pending_val = st.session_state.get("pending_azienda_value", None)
-
-        # Chiave del widget selectbox Azienda (così possiamo forzare il reset quando arriva un pending)
-        azienda_select_key = f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}"
-
-        # Se ho un pending da copia/creazione, cancello lo stato del widget per far rispettare l'index nuovo
-        if pending_val is not None and azienda_select_key in st.session_state:
-            st.session_state.pop(azienda_select_key, None)
-
         preselect_value = normalize_spaces(pending_val if pending_val is not None else current_azienda)
 
         options = [""] + unique_aziende
         if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
             options.append(preselect_value)
 
-        # CSS: riduzione padding per le icon-button
+        azienda_select_key = (
+            f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_"
+            f"{st.session_state['data_version']}_"
+            f"{abs(hash(norm_key(preselect_value)))%100000}"
+        )
+
         st.markdown(
             """
             <style>
@@ -557,7 +555,7 @@ with right:
         c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
         with c1:
             azienda_selected = st.selectbox(
-                " ",  # etichetta nascosta
+                " ",
                 options=options,
                 index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
                 key=azienda_select_key,
@@ -565,7 +563,7 @@ with right:
             )
         with c2:
             edit_disabled = not bool(azienda_selected)
-            st.write("")  # micro spacer
+            st.write("")
             if st.button("✏️", help="Rinomina globalmente il valore selezionato",
                          disabled=edit_disabled,
                          key=f"btn_edit_{st.session_state['data_version']}"):
@@ -576,8 +574,8 @@ with right:
                          key=f"btn_add_{st.session_state['data_version']}"):
                 dialog_crea_azienda("")
 
-        # una volta che il widget è stato renderizzato, consumo il pending (così non resetto ad ogni rerun)
-        if pending_val is not None:
+        # Consuma pending, così la chiave non cambia ad ogni rerun
+        if "pending_azienda_value" in st.session_state:
             st.session_state.pop("pending_azienda_value", None)
 
         # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia (icona a destra) =======
@@ -615,14 +613,15 @@ with right:
                     sel_row = cand.iloc[sel_idx].to_dict()
                     prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
 
-                    # salva prefill degli altri campi
                     if "prefill_by_art_kart" not in st.session_state:
                         st.session_state["prefill_by_art_kart"] = {}
                     st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
 
-                    # preseleziona Azienda nel select dedicato
                     if prefill.get("Azienda"):
                         st.session_state["pending_azienda_value"] = normalize_spaces(prefill["Azienda"])
+
+                    # Forza refresh generale delle chiavi
+                    st.session_state["data_version"] += 1
 
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
                     st.rerun()
@@ -663,7 +662,7 @@ with right:
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # aggiungi Azienda dal selettore (se vuota, preservo quella corrente)
+                # Aggiungi Azienda dal select (se vuota, preserva quella corrente)
                 selected_clean = normalize_spaces(azienda_selected)
                 if not selected_clean:
                     selected_clean = current_azienda
@@ -711,9 +710,10 @@ with right:
                 # aggiorna cache aziende (idempotenza se nuovo valore)
                 st.session_state["df"] = df_local
                 if values_map.get("Azienda"):
-                    if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
+                    nuova_azienda = values_map["Azienda"]
+                    if all(norm_key(nuova_azienda) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
                         st.session_state["unique_aziende"] = sorted(
-                            st.session_state.get("unique_aziende", []) + [values_map["Azienda"]],
+                            st.session_state.get("unique_aziende", []) + [nuova_azienda],
                             key=lambda x: x.lower()
                         )
                 st.session_state["data_version"] += 1
