@@ -2,7 +2,7 @@
 import json
 import re
 from urllib.parse import urlparse, parse_qs
-from difflib import SequenceMatcher  # >>> SOMIGLIANZA
+from difflib import SequenceMatcher  # Similarità
 
 import gspread
 import pandas as pd
@@ -45,8 +45,8 @@ WRITE_COLS = [
 # Colonne visibili nei risultati
 RESULT_COLS = ["art_kart", "art_desart", "DescrizioneAffinata", "URL_immagine"]
 
-# Campi che verranno copiati dal “simile”
-COPY_FIELDS = ["Prodotto", "gradazione", "annata", "Packaging", "Note", "URL_immagine"]
+# Campi copiati dal “simile” (inclusa Azienda)
+COPY_FIELDS = ["Azienda", "Prodotto", "gradazione", "annata", "Packaging", "Note", "URL_immagine"]
 
 # =========================================
 # HELPERS
@@ -100,7 +100,7 @@ def parse_sheet_url(url: str):
         gid = parsed.fragment.split("gid=")[1]
     return spreadsheet_id, (gid or "0")
 
-def str_similarity(a: str, b: str) -> float:  # >>> SOMIGLIANZA
+def str_similarity(a: str, b: str) -> float:
     a = normalize_spaces(a).lower()
     b = normalize_spaces(b).lower()
     if not a or not b:
@@ -390,7 +390,7 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # =========================================
-# MAIN: SX risultati, DX dettaglio (titoli rimossi per recuperare spazio)
+# MAIN: SX risultati, DX dettaglio (titoli rimossi per spazio)
 # =========================================
 left, right = st.columns([2, 1], gap="large")
 
@@ -542,8 +542,6 @@ with right:
             """
             <style>
             .compact-icon-btn button { padding: 0.35rem 0.45rem !important; border-radius: 6px; }
-            .inline-row { display:flex; gap:8px; align-items:center; }
-            .inline-row > div[data-testid="stVerticalBlock"] { flex:1; }
             </style>
             """,
             unsafe_allow_html=True
@@ -561,21 +559,19 @@ with right:
 
         with c2:
             edit_disabled = not bool(azienda_selected)
-            with st.container():
-                st.write("")  # micro spacer per allineare
-                if st.button("✏️", help="Rinomina globalmente il valore selezionato",
-                             disabled=edit_disabled,
-                             key=f"btn_edit_{st.session_state['data_version']}"):
-                    dialog_rinomina_azienda(azienda_selected)
+            st.write("")  # micro spacer per allineare
+            if st.button("✏️", help="Rinomina globalmente il valore selezionato",
+                         disabled=edit_disabled,
+                         key=f"btn_edit_{st.session_state['data_version']}"):
+                dialog_rinomina_azienda(azienda_selected)
 
         with c3:
-            with st.container():
-                st.write("")
-                if st.button("➕", help="Crea un nuovo valore per Azienda",
-                             key=f"btn_add_{st.session_state['data_version']}"):
-                    dialog_crea_azienda("")
+            st.write("")
+            if st.button("➕", help="Crea un nuovo valore per Azienda",
+                         key=f"btn_add_{st.session_state['data_version']}"):
+                dialog_crea_azienda("")
 
-        # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia campi come icona a destra =======
+        # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia (icona a destra) =======
         try:
             base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
             base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
@@ -586,14 +582,14 @@ with right:
                 for r, sim in zip(cand.to_dict('records'), cand["__sim_current__"])
             ]
             idx_options = [-1] + list(range(len(cand)))
-            label_map = { -1: "— scegli —", **{i: labels[i] for i in range(len(labels))} }
+            label_map = {-1: "— scegli —", **{i: labels[i] for i in range(len(labels))}}
 
             st.caption("Suggerimenti simili (ordinati per somiglianza, max 300)")
 
             sc1, sc2 = st.columns([0.88, 0.12])
             with sc1:
                 sel_idx = st.selectbox(
-                    " ", 
+                    " ",
                     options=idx_options,
                     index=0,
                     format_func=lambda i: label_map.get(i, str(i)),
@@ -609,20 +605,20 @@ with right:
                              key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
                     sel_row = cand.iloc[sel_idx].to_dict()
                     prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
+
+                    # salva prefill degli altri campi
                     if "prefill_by_art_kart" not in st.session_state:
                         st.session_state["prefill_by_art_kart"] = {}
                     st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
+
+                    # preseleziona Azienda nel select dedicato
+                    if prefill.get("Azienda"):
+                        st.session_state["pending_azienda_value"] = prefill["Azienda"]
+
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
                     st.rerun()
         except Exception:
             pass
-
-        # =========================
-        # Editor per gli altri campi (Azienda è sopra)
-        # =========================
-        other_cols = [c for c in WRITE_COLS if c != "Azienda"]
-
-
 
         # =========================
         # Editor per gli altri campi (Azienda è sopra)
@@ -658,14 +654,17 @@ with right:
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
+                # aggiungi Azienda dal selettore
                 values_map["Azienda"] = normalize_spaces(azienda_selected)
 
+                # art_kart obbligatorio pulito
                 art_val = to_clean_str(values_map.get("art_kart", ""))
                 if not art_val:
                     st.error("Campo 'art_kart' obbligatorio.")
                     st.stop()
                 values_map["art_kart"] = art_val
 
+                # client + worksheet origine
                 creds_json = json.loads(Credentials.from_authorized_user_info(
                     st.session_state["oauth_token"], SCOPES
                 ).to_json())
@@ -675,9 +674,11 @@ with right:
                 if ws is None:
                     raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
 
+                # upsert SOLO sulle WRITE_COLS, art_desart_precedente = art_desart attuale
                 art_desart_current = to_clean_str(full_row.get("art_desart", ""))
                 result = upsert_in_source(ws, values_map, art_desart_current)
 
+                # ✅ aggiorna DB locale (solo WRITE_COLS)
                 df_local = st.session_state["df"].copy()
                 for c in WRITE_COLS:
                     if c not in df_local.columns:
@@ -695,6 +696,7 @@ with right:
                         new_row[k] = to_clean_str(values_map.get(k, ""))
                     df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
 
+                # aggiorna cache aziende (idempotenza se nuovo valore)
                 st.session_state["df"] = df_local
                 if values_map.get("Azienda"):
                     if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
@@ -704,6 +706,7 @@ with right:
                         )
                 st.session_state["data_version"] += 1
 
+                # pulisco eventuale prefill usato
                 if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
                     st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
 
