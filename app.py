@@ -372,6 +372,12 @@ def refresh_unique_aziende_cache():
 if "unique_aziende" not in st.session_state:
     refresh_unique_aziende_cache()
 
+# Inizializza campi stato per rinomina massiva (fallback senza modal)
+if "open_mass_rename" not in st.session_state:
+    st.session_state["open_mass_rename"] = False
+if "rename_new_val" not in st.session_state:
+    st.session_state["rename_new_val"] = ""
+
 # =========================================
 # FILTRI
 # =========================================
@@ -497,9 +503,13 @@ with right:
             key=f"azienda_new_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}"
         )
 
-        colA, colB, colC = st.columns([1, 1, 1])
+        colA, colB = st.columns([1, 1])
         with colA:
-            if st.button(f"➕ Crea e usa «{normalize_spaces(new_azienda_input)}»", disabled=(normalize_spaces(new_azienda_input) == "")):
+            if st.button(
+                f"➕ Crea e usa «{normalize_spaces(new_azienda_input)}»",
+                disabled=(normalize_spaces(new_azienda_input) == ""),
+                key=f"btn_create_use_{st.session_state['data_version']}"
+            ):
                 candidate = normalize_spaces(new_azienda_input)
                 # idempotenza: se già esiste (case-insensitive) non duplicare
                 if all(norm_key(candidate) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
@@ -513,66 +523,80 @@ with right:
 
         with colB:
             can_mass_rename = bool(azienda_selected and norm_key(azienda_selected) != norm_key(normalize_spaces(new_azienda_input)))
-            if st.button("✏️ Cambia valore globale", disabled=not can_mass_rename):
+            if st.button("✏️ Cambia valore globale", disabled=not can_mass_rename, key=f"btn_open_rename_{st.session_state['data_version']}"):
                 st.session_state["open_mass_rename"] = True
+                st.session_state["rename_new_val"] = ""  # reset campo input
 
-        with colC:
-            st.write("")  # spacer
-
-        # Dialog per rinomina massiva
+        # =============== RINOMINA MASSIVA (fallback senza modal) ===============
         if st.session_state.get("open_mass_rename"):
-            with st.modal("Rinomina massiva «Azienda»", key="rename_modal"):
+            box = st.container(border=True)
+            with box:
+                st.markdown("### Rinomina massiva «Azienda»")
                 old_val = azienda_selected
                 st.write(f"Valore corrente da rinominare: **{old_val}**")
-                new_val = st.text_input("Nuovo nome", value="", placeholder="Nuovo nome azienda…")
+
+                # Campo nuovo nome (persistente in session_state)
+                st.session_state["rename_new_val"] = st.text_input(
+                    "Nuovo nome",
+                    value=st.session_state.get("rename_new_val", ""),
+                    placeholder="Nuovo nome azienda…",
+                    key=f"rename_new_val_input_{st.session_state['data_version']}"
+                )
+
                 # Conteggio X
                 X = int((df.get("Azienda", pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val)).sum())
-                st.warning(f"Attenzione, stai modificando il valore per **{X}** prodotti/righe. Confermi?")
+                st.warning(f"Attenzione, stai modificando il valore per **{X**} prodotti/righe. Confermi?")
+
                 c1, c2 = st.columns([1, 1])
                 with c1:
-                    confirm = st.button("✅ Conferma rinomina globale", disabled=(normalize_spaces(new_val) == ""))
+                    confirm = st.button(
+                        "✅ Conferma rinomina globale",
+                        disabled=(normalize_spaces(st.session_state["rename_new_val"]) == ""),
+                        key=f"btn_confirm_rename_{st.session_state['data_version']}"
+                    )
                 with c2:
-                    cancel = st.button("Annulla")
+                    cancel = st.button("Annulla", key=f"btn_cancel_rename_{st.session_state['data_version']}")
 
-                if cancel:
+            if cancel:
+                st.session_state["open_mass_rename"] = False
+                st.rerun()
+
+            if confirm:
+                try:
+                    creds_json = json.loads(Credentials.from_authorized_user_info(
+                        st.session_state["oauth_token"], SCOPES
+                    ).to_json())
+                    gc = get_gc(creds_json)
+                    ws = open_origin_ws(gc)
+
+                    old_clean = normalize_spaces(old_val)
+                    new_clean = normalize_spaces(st.session_state["rename_new_val"])
+
+                    # Se il nuovo valore coincide (case-insensitive) con uno esistente, usa il display già presente
+                    unq = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
+                    for v in unq:
+                        if norm_key(v) == norm_key(new_clean):
+                            new_clean = v
+                            break
+
+                    changed = batch_find_replace_azienda(ws, old_clean, new_clean)
+
+                    # refresh df e cache
+                    st.cache_data.clear()
+                    st.session_state["df"] = load_df(creds_json, SOURCE_URL)
+                    # aggiorna df locale visibile in questo scope
+                    df = st.session_state["df"]
+                    refresh_unique_aziende_cache()
+                    st.session_state["data_version"] += 1
                     st.session_state["open_mass_rename"] = False
+                    st.session_state["rename_new_val"] = ""
+
+                    st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
+                    st.toast("Azienda rinominata globalmente", icon="✅")
                     st.rerun()
-
-                if confirm:
-                    try:
-                        creds_json = json.loads(Credentials.from_authorized_user_info(
-                            st.session_state["oauth_token"], SCOPES
-                        ).to_json())
-                        gc = get_gc(creds_json)
-                        ws = open_origin_ws(gc)
-
-                        old_clean = normalize_spaces(old_val)
-                        new_clean = normalize_spaces(new_val)
-
-                        # Se il nuovo valore coincide (case-insensitive) con uno esistente, usa il display già presente
-                        unq = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
-                        for v in unq:
-                            if norm_key(v) == norm_key(new_clean):
-                                new_clean = v
-                                break
-
-                        changed = batch_find_replace_azienda(ws, old_clean, new_clean)
-
-                        # refresh df e cache
-                        st.cache_data.clear()
-                        st.session_state["df"] = load_df(creds_json, SOURCE_URL)
-                        # aggiorna df locale visibile in questo scope
-                        df = st.session_state["df"]
-                        refresh_unique_aziende_cache()
-                        st.session_state["data_version"] += 1
-                        st.session_state["open_mass_rename"] = False
-
-                        st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
-                        st.toast("Azienda rinominata globalmente", icon="✅")
-                        st.rerun()
-                    except Exception as e:
-                        st.error("❌ Errore durante la rinomina massiva:")
-                        st.exception(e)
+                except Exception as e:
+                    st.error("❌ Errore durante la rinomina massiva:")
+                    st.exception(e)
 
         # =========================
         # Editor per gli altri campi (escludo 'Azienda' perché gestito sopra)
