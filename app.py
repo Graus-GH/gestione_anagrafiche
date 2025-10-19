@@ -545,7 +545,7 @@ with right:
 
                 # Conteggio X
                 X = int((df.get("Azienda", pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val)).sum())
-                st.warning(f"Attenzione, stai modificando il valore per **{X**} prodotti/righe. Confermi?")
+                st.warning(f"Attenzione, stai modificando il valore per **{X}** prodotti/righe. Confermi?")
 
                 c1, c2 = st.columns([1, 1])
                 with c1:
