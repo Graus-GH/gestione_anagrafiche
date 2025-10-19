@@ -711,4 +711,25 @@ with right:
                 # aggiorna cache aziende (idempotenza se nuovo valore)
                 st.session_state["df"] = df_local
                 if values_map.get("Azienda"):
-                    if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_a_
+                    if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
+                        st.session_state["unique_aziende"] = sorted(
+                            st.session_state.get("unique_aziende", []) + [values_map["Azienda"]],
+                            key=lambda x: x.lower()
+                        )
+                st.session_state["data_version"] += 1
+
+                # pulisco eventuale prefill usato
+                if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
+                    st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
+
+                if result == "updated":
+                    st.success("✅ Riga aggiornata. UI aggiornata subito.")
+                elif result == "added":
+                    st.success("✅ Nuova riga aggiunta. UI aggiornata subito.")
+
+                st.toast("Salvato!", icon="✅")
+                st.rerun()
+
+            except Exception as e:
+                st.error("❌ Errore durante il salvataggio:")
+                st.exception(e)
