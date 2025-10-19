@@ -596,32 +596,66 @@ with right:
                          key=f"btn_add_{st.session_state['data_version']}"):
                 dialog_crea_azienda("")
 
-        # ======= SUGGERIMENTI ART_DESART SIMILI + COPIA CAMPI =======  # >>> NOVITÀ SOMIGLIANZA
-        # costruiamo i 10 articoli più simili (escludo lo stesso art_kart)
+        # ======= SUGGERIMENTI ART_DESART SIMILI + COPIA CAMPI (con ricerca globale) =======
         try:
-            others = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
-            others["__sim__"] = others["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
-            top_sim = (
-                others.sort_values("__sim__", ascending=False)
-                .head(10)
-                .copy()
-            )
-            # etichette leggibili e valore = art_kart
+            # base: articoli diversi dal corrente
+            base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
+
+            # --- Top 10 simili all'art_desart corrente (default) ---
+            base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
+            top_sim = base.sort_values("__sim_current__", ascending=False).head(10).copy()
             top_sim["__label__"] = top_sim.apply(
-                lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim__']:.2f})",
+                lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim_current__']:.2f})",
                 axis=1
             )
-            sim_options = [""] + top_sim["__label__"].tolist()
+
             st.markdown("**Suggerimenti simili (per art_desart):**")
-            sel_label = st.selectbox(
-                "Scegli un articolo simile per copiare i campi (non salva):",
-                options=sim_options,
+
+            # --- Ricerca globale opzionale ---
+            query_all = st.text_input(
+                "Cerca in tutti gli art_desart (opzionale)",
+                placeholder="Digita per cercare su tutto il catalogo (min 2 caratteri)…",
+                key=f"globalsearch_{current_art_kart}_{st.session_state['data_version']}",
+            ).strip()
+
+            use_global = len(query_all) >= 2
+
+            if use_global:
+                # Similarità rispetto alla QUERY digitata, non rispetto al corrente
+                df_glob = base.copy()
+                df_glob["__sim_query__"] = df_glob["art_desart"].apply(lambda s: str_similarity(s, query_all))
+                # metti un piccolo boost se contiene letteralmente la query
+                contains_mask = df_glob["art_desart"].str.contains(re.escape(query_all), case=False, na=False)
+                df_glob.loc[contains_mask, "__sim_query__"] += 0.05
+                df_glob["__sim_query__"] = df_glob["__sim_query__"].clip(0, 1)
+
+                # prendi i migliori (limite per UI)
+                cand = df_glob.sort_values("__sim_query__", ascending=False).head(50).copy()
+                cand["__label__"] = cand.apply(
+                    lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim_query__']:.2f})",
+                    axis=1
+                )
+                section_title = "Risultati ricerca globale"
+            else:
+                cand = top_sim
+                section_title = "Top 10 simili al corrente"
+
+            st.caption(section_title)
+
+            # costruiamo opzioni “ricche” per la selectbox (ricerca type-ahead dentro la lista corrente)
+            options = [{"label": "— scegli —", "row": None}] + [
+                {"label": lbl, "row": cand.iloc[i]} for i, lbl in enumerate(cand["__label__"].tolist())
+            ]
+
+            sel_obj = st.selectbox(
+                "Scegli un articolo per copiare i campi (non salva):",
+                options=options,
                 index=0,
-                key=f"simselect_{current_art_kart}_{st.session_state['data_version']}",
+                format_func=lambda o: o["label"] if isinstance(o, dict) else str(o),
+                key=f"simselect_{current_art_kart}_{st.session_state['data_version']}_{'g' if use_global else 't'}",
             )
-            sel_row = None
-            if sel_label:
-                sel_row = top_sim[top_sim["__label__"] == sel_label].iloc[0] if not top_sim.empty else None
+
+            sel_row = sel_obj.get("row") if isinstance(sel_obj, dict) else None
 
             # quando clicco, preparo un prefill per l'editor e rerun
             if st.button("↪️ Copia campi dal selezionato", disabled=(sel_row is None),
@@ -629,7 +663,6 @@ with right:
                 prefill = {}
                 for f in COPY_FIELDS:
                     prefill[f] = to_clean_str(sel_row.get(f, ""))
-                # salvo in stato per questa riga
                 if "prefill_by_art_kart" not in st.session_state:
                     st.session_state["prefill_by_art_kart"] = {}
                 st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
@@ -637,6 +670,7 @@ with right:
                 st.rerun()
         except Exception:
             pass
+
 
         # =========================
         # Editor per gli altri campi (escludo 'Azienda' perché gestito sopra)
