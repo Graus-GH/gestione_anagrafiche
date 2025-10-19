@@ -2,7 +2,7 @@
 import json
 import re
 from urllib.parse import urlparse, parse_qs
-from difflib import SequenceMatcher  # >>> NOVITÀ SOMIGLIANZA
+from difflib import SequenceMatcher  # >>> SOMIGLIANZA
 
 import gspread
 import pandas as pd
@@ -71,16 +71,13 @@ def to_clean_str(x):
     return "" if s.lower() == "nan" else s
 
 def normalize_spaces(s: str) -> str:
-    """Collassa spazi multipli e trim."""
     s = to_clean_str(s)
     return " ".join(s.split())
 
 def norm_key(s: str) -> str:
-    """Chiave di normalizzazione case-insensitive + trim + spazi."""
     return normalize_spaces(s).casefold()
 
 def unique_values_case_insensitive(series: pd.Series) -> list[str]:
-    """Valori unici (case-insensitive + spazi normalizzati)."""
     d = {}
     for v in series.dropna():
         vv = normalize_spaces(v)
@@ -103,8 +100,7 @@ def parse_sheet_url(url: str):
         gid = parsed.fragment.split("gid=")[1]
     return spreadsheet_id, (gid or "0")
 
-# Similarità semplice tra stringhe (0..1)
-def str_similarity(a: str, b: str) -> float:  # >>> NOVITÀ SOMIGLIANZA
+def str_similarity(a: str, b: str) -> float:  # >>> SOMIGLIANZA
     a = normalize_spaces(a).lower()
     b = normalize_spaces(b).lower()
     if not a or not b:
@@ -205,11 +201,9 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
         df = pd.DataFrame(df)
     df = df.dropna(how="all")
 
-    # pulizia stringhe
     for col in df.columns:
         df[col] = df[col].map(to_clean_str)
 
-    # garantisci colonne per UI/scrittura
     for c in set(RESULT_COLS + WRITE_COLS):
         if c not in df.columns:
             df[c] = ""
@@ -220,13 +214,9 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     return df
 
 # =========================================
-# SCRITTURA: utilities (robuste)
+# SCRITTURA: utilities
 # =========================================
 def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
-    """
-    Ritorna mappa {col: idx(1-based)}. Cerca le intestazioni in modo case-insensitive e trim;
-    se non trova la colonna la aggiunge in coda col nome esatto richiesto.
-    """
     header = ws.row_values(1) or []
     header = [h if h is not None else "" for h in header]
     norm = [h.strip().lower() for h in header]
@@ -251,7 +241,6 @@ def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
     return col_map
 
 def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kart: str) -> int | None:
-    """Trova la riga reale nel foglio cercando art_kart nella sua colonna (match esatto)."""
     col_idx = col_map.get("art_kart")
     if not col_idx:
         return None
@@ -263,11 +252,6 @@ def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kar
     return None
 
 def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current: str) -> str:
-    """
-    Scrive SOLO WRITE_COLS nell’origine:
-    - se art_kart esiste → sovrascrive (senza conferma)
-    - altrimenti appende una nuova riga con solo le WRITE_COLS
-    """
     col_map = ensure_headers(ws, WRITE_COLS)
 
     art_val = to_clean_str(values_map.get("art_kart", ""))
@@ -296,11 +280,6 @@ def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current
     return "added"
 
 def batch_find_replace_azienda(ws: gspread.Worksheet, old_value: str, new_value: str) -> int:
-    """
-    Rinomina massivamente il valore di 'Azienda' usando Sheets batchUpdate/findReplace
-    con match dell'intera cella e case-insensitive, limitato alla sola colonna 'Azienda'.
-    Ritorna il numero di occorrenze modificate secondo la risposta API.
-    """
     col_map = ensure_headers(ws, ["Azienda"])
     col_idx = col_map["Azienda"]  # 1-based
     requests = [{
@@ -312,7 +291,7 @@ def batch_find_replace_azienda(ws: gspread.Worksheet, old_value: str, new_value:
             "searchByRegex": False,
             "range": {
                 "sheetId": ws.id,
-                "startRowIndex": 1,             # esclude header
+                "startRowIndex": 1,
                 "startColumnIndex": col_idx - 1,
                 "endColumnIndex": col_idx
             }
@@ -377,7 +356,6 @@ if "df" not in st.session_state:
 
 df = st.session_state["df"]
 
-# cache dei valori unici per Azienda
 def refresh_unique_aziende_cache():
     st.session_state["unique_aziende"] = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
 
@@ -412,12 +390,11 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # =========================================
-# MAIN: SX risultati, DX dettaglio
+# MAIN: SX risultati, DX dettaglio (titoli rimossi per recuperare spazio)
 # =========================================
 left, right = st.columns([2, 1], gap="large")
 
 with left:
-    st.subheader("📋 Risultati")
     present_cols = [c for c in RESULT_COLS if c in filtered.columns]
     filtered_results = filtered[present_cols].copy()
     if "art_kart" in filtered_results.columns:
@@ -455,7 +432,6 @@ with left:
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
 with right:
-    st.subheader("🔎 Dettaglio riga selezionata (editabile)")
     if selected_row is None:
         st.info("Seleziona una riga nella tabella a sinistra.")
     else:
@@ -471,16 +447,20 @@ with right:
 
         current_art_kart = to_clean_str(full_row.get("art_kart", ""))
         current_art_desart = to_clean_str(full_row.get("art_desart", ""))
+        current_qxc = to_clean_str(full_row.get("QxC", ""))
 
-        # ======= TESTATA con art_desart corrente =======  # >>> NOVITÀ SOMIGLIANZA
+        # ======= TESTATA compatta: art_desart + QxC =======
         if current_art_desart:
-            st.markdown(f"### {current_art_desart}")
+            badge_qxc = f'<span style="background:#eef0f3;border:1px solid #d5d8dc;border-radius:6px;padding:2px 6px;margin-left:6px;font-size:0.85em;">QxC: {current_qxc or "-"}</span>'
+            st.markdown(
+                f"<div style='font-size:1.05rem;font-weight:600;line-height:1.25'>{current_art_desart}{badge_qxc}</div>",
+                unsafe_allow_html=True
+            )
 
         # =========================
-        # CAMPO "Azienda" – dropdown + icon buttons (✏️ ➕)
+        # CAMPO "Azienda" – select compatta + icon-buttons allineati
         # =========================
 
-        # Dialog per rinomina globale (usa df/SCOPES/SOURCE_URL dal contesto corrente)
         @st.dialog("Rinomina valore «Azienda»")
         def dialog_rinomina_azienda(old_val: str):
             st.write(f"Valore corrente da rinominare: **{old_val}**")
@@ -510,7 +490,6 @@ with right:
 
                         changed = batch_find_replace_azienda(ws, old_clean, new_clean)
 
-                        # refresh df e cache
                         st.cache_data.clear()
                         st.session_state["df"] = load_df(creds_json, SOURCE_URL)
                         refresh_unique_aziende_cache()
@@ -528,7 +507,6 @@ with right:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-        # Dialog per creazione nuovo valore
         @st.dialog("Crea nuovo valore «Azienda»")
         def dialog_crea_azienda(default_text: str = ""):
             candidate = st.text_input("Nuovo valore", value=default_text, placeholder="es. Old Group S.p.A.")
@@ -550,7 +528,6 @@ with right:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-        # Pre-selezione sicura (anche dopo creazione)
         current_azienda = normalize_spaces(full_row.get("Azienda", ""))
         unique_aziende = st.session_state.get("unique_aziende", [])
         pending_val = st.session_state.pop("pending_azienda_value", None)
@@ -560,127 +537,94 @@ with right:
         if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
             options.append(preselect_value)
 
-        # Layout compatto: select + icone
-        col_select, col_edit, col_add = st.columns([0.8, 0.1, 0.1])
+        # CSS: allineamento orizzontale e riduzione padding per le icon-button
+        st.markdown(
+            """
+            <style>
+            .compact-icon-btn button { padding: 0.35rem 0.45rem !important; border-radius: 6px; }
+            .inline-row { display:flex; gap:8px; align-items:center; }
+            .inline-row > div[data-testid="stVerticalBlock"] { flex:1; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
 
-        with col_select:
-            st.markdown("**Azienda**")
+        c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
+        with c1:
             azienda_selected = st.selectbox(
-                "Seleziona o cerca",
+                " ",  # etichetta nascosta
                 options=options,
                 index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
-                help="Digita per filtrare (type-ahead).",
                 key=f"azienda_select_{to_clean_str(full_row.get('art_kart',''))}_{st.session_state['data_version']}",
+                label_visibility="collapsed",
             )
 
-        # Icon-button stile minimal
-        icon_button_style = """
-        <style>
-        div[data-testid="stHorizontalBlock"] button {
-            padding: 0.3rem 0.4rem !important;
-            border-radius: 6px;
-            margin-top: 1.6rem;
-        }
-        </style>
-        """
-        st.markdown(icon_button_style, unsafe_allow_html=True)
-
-        with col_edit:
+        with c2:
             edit_disabled = not bool(azienda_selected)
-            if st.button("✏️", help="Rinomina globalmente il valore selezionato", disabled=edit_disabled,
-                        key=f"btn_edit_{st.session_state['data_version']}"):
-                dialog_rinomina_azienda(azienda_selected)
+            with st.container():
+                st.write("")  # micro spacer per allineare
+                if st.button("✏️", help="Rinomina globalmente il valore selezionato",
+                             disabled=edit_disabled,
+                             key=f"btn_edit_{st.session_state['data_version']}"):
+                    dialog_rinomina_azienda(azienda_selected)
 
-        with col_add:
-            if st.button("➕", help="Crea un nuovo valore per Azienda",
-                         key=f"btn_add_{st.session_state['data_version']}"):
-                dialog_crea_azienda("")
+        with c3:
+            with st.container():
+                st.write("")
+                if st.button("➕", help="Crea un nuovo valore per Azienda",
+                             key=f"btn_add_{st.session_state['data_version']}"):
+                    dialog_crea_azienda("")
 
-        # ======= SUGGERIMENTI ART_DESART SIMILI + COPIA CAMPI (con ricerca globale) =======
+        # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia campi come icona a destra =======
         try:
-            # base: articoli diversi dal corrente
             base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
-
-            # --- Top 10 simili all'art_desart corrente (default) ---
             base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
-            top_sim = base.sort_values("__sim_current__", ascending=False).head(10).copy()
-            top_sim["__label__"] = top_sim.apply(
+            cand = base.sort_values("__sim_current__", ascending=False).head(300).copy()
+            cand["__label__"] = cand.apply(
                 lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim_current__']:.2f})",
                 axis=1
             )
 
-            st.markdown("**Suggerimenti simili (per art_desart):**")
+            st.caption("Suggerimenti simili (ordinati per somiglianza, max 300)")
 
-            # --- Ricerca globale opzionale ---
-            query_all = st.text_input(
-                "Cerca in tutti gli art_desart (opzionale)",
-                placeholder="Digita per cercare su tutto il catalogo (min 2 caratteri)…",
-                key=f"globalsearch_{current_art_kart}_{st.session_state['data_version']}",
-            ).strip()
-
-            use_global = len(query_all) >= 2
-
-            if use_global:
-                # Similarità rispetto alla QUERY digitata, non rispetto al corrente
-                df_glob = base.copy()
-                df_glob["__sim_query__"] = df_glob["art_desart"].apply(lambda s: str_similarity(s, query_all))
-                # metti un piccolo boost se contiene letteralmente la query
-                contains_mask = df_glob["art_desart"].str.contains(re.escape(query_all), case=False, na=False)
-                df_glob.loc[contains_mask, "__sim_query__"] += 0.05
-                df_glob["__sim_query__"] = df_glob["__sim_query__"].clip(0, 1)
-
-                # prendi i migliori (limite per UI)
-                cand = df_glob.sort_values("__sim_query__", ascending=False).head(50).copy()
-                cand["__label__"] = cand.apply(
-                    lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim_query__']:.2f})",
-                    axis=1
+            # Select + icona copia a destra
+            sc1, sc2 = st.columns([0.88, 0.12])
+            with sc1:
+                options = [{"label": "— scegli —", "row": None}] + [
+                    {"label": lbl, "row": cand.iloc[i]} for i, lbl in enumerate(cand["__label__"].tolist())
+                ]
+                sel_obj = st.selectbox(
+                    " ",
+                    options=options,
+                    index=0,
+                    format_func=lambda o: o["label"] if isinstance(o, dict) else str(o),
+                    key=f"simselect_{current_art_kart}_{st.session_state['data_version']}",
+                    label_visibility="collapsed",
                 )
-                section_title = "Risultati ricerca globale"
-            else:
-                cand = top_sim
-                section_title = "Top 10 simili al corrente"
+                sel_row = sel_obj.get("row") if isinstance(sel_obj, dict) else None
 
-            st.caption(section_title)
-
-            # costruiamo opzioni “ricche” per la selectbox (ricerca type-ahead dentro la lista corrente)
-            options = [{"label": "— scegli —", "row": None}] + [
-                {"label": lbl, "row": cand.iloc[i]} for i, lbl in enumerate(cand["__label__"].tolist())
-            ]
-
-            sel_obj = st.selectbox(
-                "Scegli un articolo per copiare i campi (non salva):",
-                options=options,
-                index=0,
-                format_func=lambda o: o["label"] if isinstance(o, dict) else str(o),
-                key=f"simselect_{current_art_kart}_{st.session_state['data_version']}_{'g' if use_global else 't'}",
-            )
-
-            sel_row = sel_obj.get("row") if isinstance(sel_obj, dict) else None
-
-            # quando clicco, preparo un prefill per l'editor e rerun
-            if st.button("↪️ Copia campi dal selezionato", disabled=(sel_row is None),
-                         key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
-                prefill = {}
-                for f in COPY_FIELDS:
-                    prefill[f] = to_clean_str(sel_row.get(f, ""))
-                if "prefill_by_art_kart" not in st.session_state:
-                    st.session_state["prefill_by_art_kart"] = {}
-                st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
-                st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
-                st.rerun()
+            with sc2:
+                st.write("")
+                if st.button("📋", help="Copia i campi dal selezionato nell’editor (non salva)",
+                             disabled=(sel_row is None),
+                             key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
+                    prefill = {}
+                    for f in COPY_FIELDS:
+                        prefill[f] = to_clean_str(sel_row.get(f, ""))
+                    if "prefill_by_art_kart" not in st.session_state:
+                        st.session_state["prefill_by_art_kart"] = {}
+                    st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
+                    st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
+                    st.rerun()
         except Exception:
             pass
 
-
-
-
         # =========================
-        # Editor per gli altri campi (escludo 'Azienda' perché gestito sopra)
+        # Editor per gli altri campi (Azienda è sopra)
         # =========================
         other_cols = [c for c in WRITE_COLS if c != "Azienda"]
         pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in other_cols]
 
-        # applica eventuale prefill da “simile”  # >>> NOVITÀ SOMIGLIANZA
         prefill_map = (st.session_state.get("prefill_by_art_kart", {}) or {}).get(current_art_kart, {})
         if prefill_map:
             for p in pairs:
@@ -703,24 +647,20 @@ with right:
 
         if st.button("💾 Salva nell'origine"):
             try:
-                # mappa valori da editor (solo WRITE_COLS tranne Azienda, che prendo dal selettore)
                 values_map = {}
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # aggiungi Azienda dal selettore
                 values_map["Azienda"] = normalize_spaces(azienda_selected)
 
-                # art_kart obbligatorio pulito
                 art_val = to_clean_str(values_map.get("art_kart", ""))
                 if not art_val:
                     st.error("Campo 'art_kart' obbligatorio.")
                     st.stop()
                 values_map["art_kart"] = art_val
 
-                # client + worksheet origine
                 creds_json = json.loads(Credentials.from_authorized_user_info(
                     st.session_state["oauth_token"], SCOPES
                 ).to_json())
@@ -730,11 +670,9 @@ with right:
                 if ws is None:
                     raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
 
-                # upsert SOLO sulle 9 colonne, art_desart_precedente = art_desart attuale
                 art_desart_current = to_clean_str(full_row.get("art_desart", ""))
                 result = upsert_in_source(ws, values_map, art_desart_current)
 
-                # ✅ aggiorna DB locale (solo WRITE_COLS)
                 df_local = st.session_state["df"].copy()
                 for c in WRITE_COLS:
                     if c not in df_local.columns:
@@ -752,7 +690,6 @@ with right:
                         new_row[k] = to_clean_str(values_map.get(k, ""))
                     df_local = pd.concat([df_local, pd.DataFrame([new_row])], ignore_index=True)
 
-                # aggiorna cache aziende (idempotenza se nuovo valore)
                 st.session_state["df"] = df_local
                 if values_map.get("Azienda"):
                     if all(norm_key(values_map["Azienda"]) != norm_key(v) for v in st.session_state.get("unique_aziende", [])):
@@ -762,7 +699,6 @@ with right:
                         )
                 st.session_state["data_version"] += 1
 
-                # pulisco eventuale prefill usato
                 if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
                     st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
 
