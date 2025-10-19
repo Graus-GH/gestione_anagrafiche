@@ -596,7 +596,7 @@ with right:
                          key=f"btn_add_{st.session_state['data_version']}"):
                 dialog_crea_azienda("")
 
-        # ======= SUGGERIMENTI ART_DESART SIMILI + COPIA CAMPI (con ricerca globale) =======
+        # ======= SUGGERIMENTI ART_DESART SIMILI + COPIA CAMPI (con ricerca globale, safe per widget) =======
         try:
             # base: articoli diversi dal corrente
             base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
@@ -604,10 +604,12 @@ with right:
             # --- Top 10 simili all'art_desart corrente (default) ---
             base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
             top_sim = base.sort_values("__sim_current__", ascending=False).head(10).copy()
-            top_sim["__label__"] = top_sim.apply(
-                lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim_current__']:.2f})",
-                axis=1
-            )
+
+            # costruiamo label leggibili
+            def mk_label(row, score_col):
+                return f"{to_clean_str(row.get('art_desart',''))} — {to_clean_str(row.get('art_kart',''))} ({row[score_col]:.2f})"
+
+            top_sim["__label__"] = top_sim.apply(lambda r: mk_label(r, "__sim_current__"), axis=1)
 
             st.markdown("**Suggerimenti simili (per art_desart):**")
 
@@ -621,20 +623,14 @@ with right:
             use_global = len(query_all) >= 2
 
             if use_global:
-                # Similarità rispetto alla QUERY digitata, non rispetto al corrente
                 df_glob = base.copy()
                 df_glob["__sim_query__"] = df_glob["art_desart"].apply(lambda s: str_similarity(s, query_all))
-                # metti un piccolo boost se contiene letteralmente la query
                 contains_mask = df_glob["art_desart"].str.contains(re.escape(query_all), case=False, na=False)
                 df_glob.loc[contains_mask, "__sim_query__"] += 0.05
                 df_glob["__sim_query__"] = df_glob["__sim_query__"].clip(0, 1)
 
-                # prendi i migliori (limite per UI)
                 cand = df_glob.sort_values("__sim_query__", ascending=False).head(50).copy()
-                cand["__label__"] = cand.apply(
-                    lambda r: f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({r['__sim_query__']:.2f})",
-                    axis=1
-                )
+                cand["__label__"] = cand.apply(lambda r: mk_label(r, "__sim_query__"), axis=1)
                 section_title = "Risultati ricerca globale"
             else:
                 cand = top_sim
@@ -642,34 +638,40 @@ with right:
 
             st.caption(section_title)
 
-            # costruiamo opzioni “ricche” per la selectbox (ricerca type-ahead dentro la lista corrente)
-            options = [{"label": "— scegli —", "row": None}] + [
-                {"label": lbl, "row": cand.iloc[i]} for i, lbl in enumerate(cand["__label__"].tolist())
-            ]
+            # Opzioni sicure: SOLO stringhe nel widget + mappa label->art_kart
+            labels = ["— scegli —"] + cand["__label__"].tolist()
+            label_to_art = {lbl: to_clean_str(row_art_kart) for lbl, row_art_kart in zip(cand["__label__"], cand["art_kart"])}
 
-            sel_obj = st.selectbox(
+            sel_label = st.selectbox(
                 "Scegli un articolo per copiare i campi (non salva):",
-                options=options,
+                options=labels,
                 index=0,
-                format_func=lambda o: o["label"] if isinstance(o, dict) else str(o),
                 key=f"simselect_{current_art_kart}_{st.session_state['data_version']}_{'g' if use_global else 't'}",
             )
 
-            sel_row = sel_obj.get("row") if isinstance(sel_obj, dict) else None
+            sel_row = None
+            if sel_label and sel_label != "— scegli —":
+                sel_art_kart = label_to_art.get(sel_label)
+                if sel_art_kart:
+                    # recupero riga selezionata come dict puro (no Series nel widget state)
+                    tmp = cand[cand["art_kart"].map(to_clean_str) == to_clean_str(sel_art_kart)]
+                    if not tmp.empty:
+                        sel_row = tmp.iloc[0].to_dict()
 
-            # quando clicco, preparo un prefill per l'editor e rerun
             if st.button("↪️ Copia campi dal selezionato", disabled=(sel_row is None),
                          key=f"btn_copy_{current_art_kart}_{st.session_state['data_version']}"):
                 prefill = {}
                 for f in COPY_FIELDS:
-                    prefill[f] = to_clean_str(sel_row.get(f, ""))
+                    prefill[f] = to_clean_str(sel_row.get(f, "")) if sel_row else ""
                 if "prefill_by_art_kart" not in st.session_state:
                     st.session_state["prefill_by_art_kart"] = {}
                 st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
                 st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
                 st.rerun()
-        except Exception:
-            pass
+        except Exception as e:
+            # opzionale: logga e continua senza bloccare l'app
+            st.warning(f"Ricerca simili non disponibile: {e}")
+
 
 
         # =========================
