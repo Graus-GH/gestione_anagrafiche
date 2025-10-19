@@ -461,55 +461,61 @@ with right:
         # CAMPO "Azienda" – dropdown + icon buttons (✏️ ➕)
         # =========================
 
-        # Dialog per rinomina globale (usa df/SCOPES/SOURCE_URL dal contesto corrente)
-        @st.dialog("Rinomina valore «Azienda»")
-        def dialog_rinomina_azienda(old_val: str):
-            st.write(f"Valore corrente da rinominare: **{old_val}**")
-            new_val = st.text_input("Nuovo nome", value="", placeholder="Nuovo nome azienda…")
+# Dialog per rinomina globale (precompilato con il valore corrente)
+@st.dialog("Rinomina valore «Azienda»")
+def dialog_rinomina_azienda(old_val: str):
+    old_clean = normalize_spaces(old_val)
+    new_val = st.text_input(
+        "Nuovo nome",
+        value=old_clean,                    # ← precompila con il valore attuale
+        placeholder="Nuovo nome azienda…",
+    )
 
-            X = int((df.get("Azienda", pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val)).sum())
-            st.warning(f"⚠️ Stai modificando il valore per **{X}** prodotti/righe. Confermi?")
+    # Conteggio righe impattate sull'attuale valore
+    X = int((df.get("Azienda", pd.Series([], dtype=object)).map(norm_key) == norm_key(old_clean)).sum())
+    st.warning(f"⚠️ Stai modificando il valore per **{X}** prodotti/righe. Confermi?")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✅ Conferma rinomina", disabled=(normalize_spaces(new_val) == "")):
-                    try:
-                        creds_json = json.loads(Credentials.from_authorized_user_info(
-                            st.session_state["oauth_token"], SCOPES
-                        ).to_json())
-                        gc = get_gc(creds_json)
-                        ws = open_origin_ws(gc)
+    # Disabilita conferma se il nuovo valore è vuoto o uguale (case-insensitive + trim)
+    new_clean = normalize_spaces(new_val)
+    disable_confirm = (new_clean == "") or (norm_key(new_clean) == norm_key(old_clean))
 
-                        old_clean = normalize_spaces(old_val)
-                        new_clean = normalize_spaces(new_val)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Conferma rinomina", disabled=disable_confirm):
+            try:
+                creds_json = json.loads(Credentials.from_authorized_user_info(
+                    st.session_state["oauth_token"], SCOPES
+                ).to_json())
+                gc = get_gc(creds_json)
+                ws = open_origin_ws(gc)
 
-                        unq = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
-                        for v in unq:
-                            if norm_key(v) == norm_key(new_clean):
-                                new_clean = v
-                                break
+                # Se il nuovo coincide (case-insensitive) con uno esistente, riusa la formattazione già presente
+                unq = unique_values_case_insensitive(df["Azienda"]) if "Azienda" in df.columns else []
+                for v in unq:
+                    if norm_key(v) == norm_key(new_clean):
+                        new_clean = v
+                        break
 
-                        changed = batch_find_replace_azienda(ws, old_clean, new_clean)
+                changed = batch_find_replace_azienda(ws, old_clean, new_clean)
 
-                        # refresh df e cache
-                        st.cache_data.clear()
-                        st.session_state["df"] = load_df(creds_json, SOURCE_URL)
-                        # aggiorna riferimento locale
-                        # (al prossimo rerun df verrà riletto da session_state)
-                        refresh_unique_aziende_cache()
-                        st.session_state["data_version"] += 1
-                        st.session_state["pending_azienda_value"] = new_clean
+                # refresh df e cache
+                st.cache_data.clear()
+                st.session_state["df"] = load_df(creds_json, SOURCE_URL)
+                refresh_unique_aziende_cache()
+                st.session_state["data_version"] += 1
+                st.session_state["pending_azienda_value"] = new_clean
 
-                        st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
-                        st.toast("Azienda rinominata globalmente", icon="✅")
-                        st.rerun()
-                    except Exception as e:
-                        st.error("❌ Errore durante la rinomina massiva:")
-                        st.exception(e)
+                st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
+                st.toast("Azienda rinominata globalmente", icon="✅")
+                st.rerun()
+            except Exception as e:
+                st.error("❌ Errore durante la rinomina massiva:")
+                st.exception(e)
 
-            with col2:
-                if st.button("❌ Annulla"):
-                    st.rerun()
+    with col2:
+        if st.button("❌ Annulla"):
+            st.rerun()
+
 
         # Dialog per creazione nuovo valore
         @st.dialog("Crea nuovo valore «Azienda»")
