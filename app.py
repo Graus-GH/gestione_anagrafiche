@@ -29,7 +29,7 @@ REDIRECT_URI = "http://localhost"
 # Origine (lettura/scrittura)
 SOURCE_URL = st.secrets["sheet"]["url"]
 
-# Colonne scrivibili (SOLO queste)
+# Colonne scrivibili (SOLO queste) – include anche art_kart per upsert/append corretti
 WRITE_COLS = [
     "art_kart",
     "Azienda",
@@ -251,7 +251,8 @@ def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kar
     return None
 
 def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current: str) -> str:
-    col_map = ensure_headers(ws, WRITE_COLS)
+    # assicurati che ci siano anche le colonne chiave
+    col_map = ensure_headers(ws, list(dict.fromkeys(WRITE_COLS + ["art_kart"])))
 
     art_val = to_clean_str(values_map.get("art_kart", ""))
     if not art_val:
@@ -269,6 +270,7 @@ def upsert_in_source(ws: gspread.Worksheet, values_map: dict, art_desart_current
             ws.update(a1, [[to_clean_str(values_map.get(col, ""))]], value_input_option="USER_ENTERED")
         return "updated"
 
+    # append nuova riga con tutte le WRITE_COLS (incluso art_kart)
     header = ws.row_values(1) or []
     full_len = len(header)
     new_row = ["" for _ in range(full_len)]
@@ -453,15 +455,78 @@ with right:
         current_art_kart = to_clean_str(full_row.get("art_kart", ""))
         current_art_desart = to_clean_str(full_row.get("art_desart", ""))
         current_qxc = to_clean_str(full_row.get("QxC", ""))
+        current_art_qxcacq = to_clean_str(full_row.get("art_qxcacq", ""))
         current_azienda = normalize_spaces(full_row.get("Azienda", ""))
 
-        # ======= TESTATA compatta: art_desart + QxC =======
-        if current_art_desart:
-            badge_qxc = f'<span style="background:#eef0f3;border:1px solid #d5d8dc;border-radius:6px;padding:2px 6px;margin-left:6px;font-size:0.85em;">QxC: {current_qxc or "-"}</span>'
-            st.markdown(
-                f"<div style='font-size:1.05rem;font-weight:600;line-height:1.25'>{current_art_desart}{badge_qxc}</div>",
-                unsafe_allow_html=True
+        # ======= TESTATA compatta: art_qxcacq + QxC (senza etichetta) + art_desart =======
+        # Riga 1: art_qxcacq in evidenza + pill QxC (solo valore)
+        # Riga 2: art_desart (in tono minore)
+        pill_qxc = ""
+        if current_qxc:
+            pill_qxc = (
+                f'<span style="background:#eef0f3;border:1px solid #d5d8dc;border-radius:6px;'
+                f'padding:2px 6px;margin-left:6px;font-size:0.85em;">{current_qxc}</span>'
             )
+        line1 = ""
+        if current_art_qxcacq:
+            line1 = f"<div style='font-size:1.08rem;font-weight:700;line-height:1.25'>{current_art_qxcacq}{pill_qxc}</div>"
+        elif current_qxc:  # fallback se manca art_qxcacq
+            line1 = f"<div style='font-size:1.08rem;font-weight:700;line-height:1.25'>{pill_qxc}</div>"
+
+        line2 = ""
+        if current_art_desart:
+            line2 = f"<div style='font-size:0.92rem;color:#444;margin-top:2px;'>{current_art_desart}</div>"
+
+        st.markdown(line1 + line2, unsafe_allow_html=True)
+
+        # ======= (SPOSTATO) SUGGERIMENTI SIMILI SOPRA "AZIENDA" =======
+        try:
+            base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
+            base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
+            cand = base.sort_values("__sim_current__", ascending=False).head(300).copy()
+
+            labels = [
+                f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({sim:.2f})"
+                for r, sim in zip(cand.to_dict('records'), cand["__sim_current__"])
+            ]
+            idx_options = [-1] + list(range(len(cand)))
+            label_map = {-1: "— scegli —", **{i: labels[i] for i in range(len(labels))}}
+
+            st.caption("Suggerimenti simili (ordinati per somiglianza, max 300)")
+
+            sc1, sc2 = st.columns([0.88, 0.12])
+            with sc1:
+                sel_idx = st.selectbox(
+                    " ",
+                    options=idx_options,
+                    index=0,
+                    format_func=lambda i: label_map.get(i, str(i)),
+                    key=f"simselect_{current_art_kart}",
+                    label_visibility="collapsed",
+                )
+
+            with sc2:
+                st.write("")
+                copy_disabled = (sel_idx == -1)
+                if st.button("📋", help="Copia i campi dal selezionato nell’editor (non salva)",
+                             disabled=copy_disabled,
+                             key=f"btn_copy_{current_art_kart}"):
+                    sel_row = cand.iloc[sel_idx].to_dict()
+                    prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
+
+                    # salva prefill degli altri campi per QUESTA riga
+                    if "prefill_by_art_kart" not in st.session_state:
+                        st.session_state["prefill_by_art_kart"] = {}
+                    st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
+
+                    # preseleziona Azienda SOLO per QUESTA riga
+                    if prefill.get("Azienda"):
+                        st.session_state["pending_azienda_by_art"][current_art_kart] = normalize_spaces(prefill["Azienda"])
+
+                    st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
+                    st.rerun()
+        except Exception:
+            pass
 
         # =========================
         # CAMPO "Azienda" – select compatta + icon-buttons
@@ -586,59 +651,10 @@ with right:
         if current_art_kart in st.session_state["pending_azienda_by_art"]:
             st.session_state["pending_azienda_by_art"].pop(current_art_kart, None)
 
-        # ======= SUGGERIMENTI ART_DESART SIMILI (max 300) + copia (icona a destra) =======
-        try:
-            base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
-            base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
-            cand = base.sort_values("__sim_current__", ascending=False).head(300).copy()
-
-            labels = [
-                f"{to_clean_str(r.get('art_desart',''))} — {to_clean_str(r.get('art_kart',''))} ({sim:.2f})"
-                for r, sim in zip(cand.to_dict('records'), cand["__sim_current__"])
-            ]
-            idx_options = [-1] + list(range(len(cand)))
-            label_map = {-1: "— scegli —", **{i: labels[i] for i in range(len(labels))}}
-
-            st.caption("Suggerimenti simili (ordinati per somiglianza, max 300)")
-
-            sc1, sc2 = st.columns([0.88, 0.12])
-            with sc1:
-                sel_idx = st.selectbox(
-                    " ",
-                    options=idx_options,
-                    index=0,
-                    format_func=lambda i: label_map.get(i, str(i)),
-                    key=f"simselect_{current_art_kart}",
-                    label_visibility="collapsed",
-                )
-
-            with sc2:
-                st.write("")
-                copy_disabled = (sel_idx == -1)
-                if st.button("📋", help="Copia i campi dal selezionato nell’editor (non salva)",
-                             disabled=copy_disabled,
-                             key=f"btn_copy_{current_art_kart}"):
-                    sel_row = cand.iloc[sel_idx].to_dict()
-                    prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
-
-                    # salva prefill degli altri campi per QUESTA riga
-                    if "prefill_by_art_kart" not in st.session_state:
-                        st.session_state["prefill_by_art_kart"] = {}
-                    st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
-
-                    # preseleziona Azienda SOLO per QUESTA riga
-                    if prefill.get("Azienda"):
-                        st.session_state["pending_azienda_by_art"][current_art_kart] = normalize_spaces(prefill["Azienda"])
-
-                    st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
-                    st.rerun()
-        except Exception:
-            pass
-
         # =========================
         # Editor per gli altri campi (Azienda è sopra)
         # =========================
-        other_cols = [c for c in WRITE_COLS if c != "Azienda"]
+        other_cols = [c for c in WRITE_COLS if c not in ("Azienda",)]
         pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in other_cols]
 
         prefill_map = (st.session_state.get("prefill_by_art_kart", {}) or {}).get(current_art_kart, {})
@@ -680,7 +696,7 @@ with right:
                 values_map["Azienda"] = normalize_spaces(chosen_azienda)
 
                 # art_kart obbligatorio
-                art_val = to_clean_str(values_map.get("art_kart", ""))
+                art_val = to_clean_str(full_row.get("art_kart", "")) or to_clean_str(values_map.get("art_kart", ""))
                 if not art_val:
                     st.error("Campo 'art_kart' obbligatorio.")
                     st.stop()
@@ -701,7 +717,7 @@ with right:
                 result = upsert_in_source(ws, values_map, art_desart_current)
 
                 # ===== Verifica e correzione mirata su cella 'Azienda' =====
-                col_map = ensure_headers(ws, WRITE_COLS)  # case-insensitive
+                col_map = ensure_headers(ws, list(dict.fromkeys(WRITE_COLS + ["art_kart"])))
                 row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
 
                 if row_number is None:
