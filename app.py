@@ -1,4 +1,4 @@
-# app.py
+# app.py – dettaglio riga più largo, label a sinistra del dropdown, layout super‑compatto
 import json
 import re
 from urllib.parse import urlparse, parse_qs
@@ -361,6 +361,7 @@ df = st.session_state["df"]
 # Cache opzioni uniche per tutti i campi SELECT_FIELDS
 if "unique_options_by_field" not in st.session_state:
     st.session_state["unique_options_by_field"] = {}
+
 def refresh_unique_cache(field: str):
     if field in df.columns:
         st.session_state["unique_options_by_field"][field] = unique_values_case_insensitive(df[field])
@@ -371,6 +372,7 @@ for f in SELECT_FIELDS:
         refresh_unique_cache(f)
 
 # Mappe pending/selected/effective per campo
+
 def ensure_field_maps():
     if "pending_by_field" not in st.session_state:
         st.session_state["pending_by_field"] = {f:{} for f in SELECT_FIELDS}
@@ -408,9 +410,9 @@ if f_aff.strip():
 filtered = df.loc[mask].copy()
 
 # =========================================
-# MAIN: SX risultati, DX dettaglio
+# MAIN: SX risultati, DX dettaglio (DX più largo)
 # =========================================
-left, right = st.columns([2, 1], gap="large")
+left, right = st.columns([1, 1.6], gap="large")  # dettaglio riga allargato
 
 with left:
     present_cols = [c for c in RESULT_COLS if c in filtered.columns]
@@ -450,6 +452,20 @@ with left:
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
 with right:
+    # CSS ultra‑compatto: etichette a sinistra, controlli bassi, margini ridotti
+    st.markdown(
+        """
+        <style>
+          .row-compact { margin: 2px 0; }
+          .labelcell { font-size: 0.86rem; font-weight: 600; padding-top: 6px; }
+          div[data-baseweb="select"] > div { min-height: 34px; }
+          .stButton button { padding: 0.26rem 0.44rem; min-height: 34px; border-radius: 8px; }
+          .stCaption, .stMarkdown p { margin-bottom: 6px !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if selected_row is None:
         st.info("Seleziona una riga nella tabella a sinistra.")
     else:
@@ -500,35 +516,26 @@ with right:
             label_map = {-1: "— scegli —", **{i: labels[i] for i in range(len(labels))}}
 
             st.caption("Suggerimenti simili (ordinati per somiglianza, max 300)")
-
             sc1, sc2 = st.columns([0.88, 0.12])
             with sc1:
                 sel_idx = st.selectbox(
-                    " ",
-                    options=idx_options,
-                    index=0,
-                    format_func=lambda i: label_map.get(i, str(i)),
-                    key=f"simselect_{current_art_kart}",
-                    label_visibility="collapsed",
+                    " ", options=idx_options, index=0, format_func=lambda i: label_map.get(i, str(i)),
+                    key=f"simselect_{current_art_kart}", label_visibility="collapsed",
                 )
             with sc2:
                 st.write("")
                 copy_disabled = (sel_idx == -1)
                 if st.button(
-                    "📋",
-                    help="Copia i campi dal selezionato nell’editor (non salva)",
-                    disabled=copy_disabled,
-                    key=f"btn_copy_{current_art_kart}",
+                    "📋", help="Copia i campi dal selezionato nell’editor (non salva)",
+                    disabled=copy_disabled, key=f"btn_copy_{current_art_kart}"
                 ):
                     sel_row = cand.iloc[sel_idx].to_dict()
                     prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
 
-                    # prefill degli altri campi per QUESTA riga
                     if "prefill_by_art_kart" not in st.session_state:
                         st.session_state["prefill_by_art_kart"] = {}
                     st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
 
-                    # aggiorna pending/selected/effective per TUTTI i campi SELECT
                     for field in SELECT_FIELDS:
                         if prefill.get(field):
                             v = normalize_spaces(prefill[field])
@@ -557,16 +564,15 @@ with right:
             with c1:
                 if st.button("✅ Conferma rinomina", disabled=(normalize_spaces(new_val) == "")):
                     try:
-                        creds_json = json.loads(
-                            Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json()
-                        )
+                        creds_json = json.loads(Credentials.from_authorized_user_info(
+                            st.session_state["oauth_token"], SCOPES
+                        ).to_json())
                         gc = get_gc(creds_json)
                         ws = open_origin_ws(gc)
 
                         old_clean = normalize_spaces(old_val)
                         new_clean = normalize_spaces(new_val)
 
-                        # se esiste già (case-insensitive), usa la forma canonica esistente
                         refresh_unique_cache(col_name)
                         for v in st.session_state["unique_options_by_field"].get(col_name, []):
                             if norm_key(v) == norm_key(new_clean):
@@ -575,14 +581,12 @@ with right:
 
                         changed = batch_find_replace_generic(ws, col_name, old_clean, new_clean)
 
-                        # refresh completo dati e cache
                         st.cache_data.clear()
                         st.session_state["df"] = load_df(creds_json, SOURCE_URL)
                         for f in SELECT_FIELDS:
                             refresh_unique_cache(f)
                         st.session_state["data_version"] += 1
 
-                        # imposta pending/selected/effective per la riga corrente
                         st.session_state["pending_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state["selected_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state["effective_by_field"][col_name][current_art_kart] = new_clean
@@ -608,14 +612,10 @@ with right:
             with c1:
                 if st.button("➕ Crea e usa", disabled=(normalize_spaces(candidate) == "")):
                     cand = normalize_spaces(candidate)
-                    # aggiungi tra le opzioni uniche se non presente
-                    if all(
-                        norm_key(cand) != norm_key(v)
-                        for v in st.session_state["unique_options_by_field"].get(col_name, [])
-                    ):
+                    if all(norm_key(cand) != norm_key(v) for v in st.session_state["unique_options_by_field"].get(col_name, [])):
                         st.session_state["unique_options_by_field"][col_name] = sorted(
                             st.session_state["unique_options_by_field"].get(col_name, []) + [cand],
-                            key=lambda x: x.lower(),
+                            key=lambda x: x.lower()
                         )
                     st.session_state["pending_by_field"][col_name][current_art_kart] = cand
                     st.session_state["selected_by_field"][col_name][current_art_kart] = cand
@@ -627,25 +627,10 @@ with right:
                     st.rerun()
 
         # =========================
-        # UI COMPACT: stile e helper riga
+        # RENDER SELECT COMPACT: label a sinistra + select + ✏️ + ➕
         # =========================
-        st.markdown(
-            """
-            <style>
-              .field-row { margin: 2px 0 8px 0; }
-              .field-row .label { font-size: 0.9rem; font-weight: 600; margin: 0 0 4px 0; }
-              .icon-btn button { padding: 0.32rem 0.45rem !important; border-radius: 8px !important; min-height: 36px; }
-              div[data-baseweb="select"] > div { min-height: 36px; }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-        st.caption("Campi principali")
-
         def render_select_row(col_name: str, full_row, current_art_kart: str):
             current_val = normalize_spaces(full_row.get(col_name, ""))
-
             pending_map = st.session_state["pending_by_field"][col_name]
             selected_map = st.session_state["selected_by_field"][col_name]
             effective_map = st.session_state["effective_by_field"][col_name]
@@ -663,56 +648,34 @@ with right:
                 options.append(effective)
 
             select_key = f"select_{col_name}_{to_clean_str(current_art_kart)}"
-
-            # forza lo stato PRIMA del widget
             if effective:
                 cur_val = st.session_state.get(select_key, "")
                 if norm_key(cur_val) != norm_key(effective):
                     st.session_state[select_key] = effective
 
-            st.markdown(f"<div class='field-row'><div class='label'>{col_name}</div>", unsafe_allow_html=True)
-            c1, c2, c3 = st.columns([0.78, 0.11, 0.11])
-
-            with c1:
+            col_label, col_select, col_edit, col_add = st.columns([0.22, 0.58, 0.10, 0.10])
+            with col_label:
+                st.markdown(f"<div class='labelcell'>{col_name}</div>", unsafe_allow_html=True)
+            with col_select:
                 val = st.selectbox(
-                    " ",
-                    options=options,
-                    index=next(
-                        (i for i, opt in enumerate(options)
-                         if norm_key(opt) == norm_key(st.session_state.get(select_key, effective) or "")),
-                        0,
-                    ),
-                    key=select_key,
-                    label_visibility="collapsed",
+                    " ", options=options,
+                    index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(st.session_state.get(select_key, effective) or "")), 0),
+                    key=select_key, label_visibility="collapsed",
                 )
                 selected_map[current_art_kart] = normalize_spaces(val)
                 effective_map[current_art_kart] = normalize_spaces(val or effective or current_val)
-
-            with c2:
+            with col_edit:
                 edit_disabled = not bool(st.session_state.get(select_key, ""))
-                st.container()  # contenitore per allineamento
-                if st.button(
-                    "✏️",
-                    help=f"Rinomina globalmente il valore selezionato in «{col_name}»",
-                    disabled=edit_disabled,
-                    key=f"btn_edit_{col_name}_{current_art_kart}",
-                ):
+                if st.button("✏️", help=f"Rinomina globalmente il valore selezionato in «{col_name}»", disabled=edit_disabled, key=f"btn_edit_{col_name}_{current_art_kart}"):
                     dialog_rinomina_generica(col_name, st.session_state.get(select_key, ""))
-
-            with c3:
-                st.container()
-                if st.button(
-                    "➕",
-                    help=f"Crea un nuovo valore per {col_name}",
-                    key=f"btn_add_{col_name}_{current_art_kart}",
-                ):
+            with col_add:
+                if st.button("➕", help=f"Crea un nuovo valore per {col_name}", key=f"btn_add_{col_name}_{current_art_kart}"):
                     dialog_crea_generica(col_name, st.session_state.get(select_key, ""))
 
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        # render di tutte le righe select con layout compatto
+        # render tutti i campi in pila super‑compatta
         for col_name in SELECT_FIELDS:
-            render_select_row(col_name, full_row, current_art_kart)
+            with st.container():
+                render_select_row(col_name, full_row, current_art_kart)
 
         # =========================
         # Editor per gli altri campi (esclude i SELECT_FIELDS)
@@ -746,14 +709,11 @@ with right:
         if st.button("💾 Salva nell'origine"):
             try:
                 values_map = {}
-
-                # 1) Valori dagli altri campi
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # 2) Valori deterministici dai SELECT_FIELDS (effective)
                 eff_all = st.session_state["effective_by_field"]
                 sel_all = st.session_state["selected_by_field"]
                 pend_all = st.session_state["pending_by_field"]
@@ -766,33 +726,25 @@ with right:
                         chosen = pend_all[field].get(current_art_kart, "")
                     if not chosen:
                         ui_key = f"select_{field}_{to_clean_str(current_art_kart)}"
-                        chosen = normalize_spaces(st.session_state.get(ui_key, "")) or normalize_spaces(
-                            full_row.get(field, "")
-                        )
+                        chosen = normalize_spaces(st.session_state.get(ui_key, "")) or normalize_spaces(full_row.get(field, ""))
                     values_map[field] = normalize_spaces(chosen)
 
-                # art_kart obbligatorio
                 art_val = to_clean_str(full_row.get("art_kart", "")) or to_clean_str(values_map.get("art_kart", ""))
                 if not art_val:
                     st.error("Campo 'art_kart' obbligatorio.")
                     st.stop()
                 values_map["art_kart"] = art_val
 
-                # client + worksheet origine
-                creds_json = json.loads(
-                    Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json()
-                )
+                creds_json = json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json())
                 gc = get_gc(creds_json)
                 spreadsheet_id, gid = parse_sheet_url(SOURCE_URL)
                 ws = next((w for w in gc.open_by_key(spreadsheet_id).worksheets() if str(w.id) == str(gid)), None)
                 if ws is None:
                     raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
 
-                # upsert
                 art_desart_current = to_clean_str(full_row.get("art_desart", ""))
                 result = upsert_in_source(ws, values_map, art_desart_current)
 
-                # verifica e forzatura mirata celle select
                 col_map = ensure_headers(ws, list(dict.fromkeys(WRITE_COLS + ["art_kart"])))
                 row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
 
@@ -810,20 +762,16 @@ with right:
                 else:
                     st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
 
-                # refresh dal file origine
                 st.cache_data.clear()
                 st.session_state["df"] = load_df(creds_json, SOURCE_URL)
                 df = st.session_state["df"]
                 for f in SELECT_FIELDS:
                     refresh_unique_cache(f)
 
-                # setta effective post-refresh
                 saved_row = df[df["art_kart"].map(to_clean_str) == art_val]
                 if not saved_row.empty:
                     for field in SELECT_FIELDS:
-                        st.session_state["effective_by_field"][field][current_art_kart] = normalize_spaces(
-                            saved_row.iloc[0].get(field, values_map[field])
-                        )
+                        st.session_state["effective_by_field"][field][current_art_kart] = normalize_spaces(saved_row.iloc[0].get(field, values_map[field]))
                 else:
                     for field in SELECT_FIELDS:
                         st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
