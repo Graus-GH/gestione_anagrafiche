@@ -670,10 +670,6 @@ with right:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
                 # === SORGENTE AZIENDA DA SALVARE (ordine di priorità) ===
-                # 1) scelta esplicita registrata nel widget per questa riga
-                # 2) pending da copia per questa riga (se ancora presente, raro)
-                # 3) valore mostrato nel select corrente
-                # 4) valore attuale della riga
                 chosen_azienda = st.session_state["selected_azienda_by_art"].get(current_art_kart, "")
                 if not chosen_azienda:
                     chosen_azienda = st.session_state["pending_azienda_by_art"].get(current_art_kart, "")
@@ -703,6 +699,21 @@ with right:
                 # upsert SOLO sulle WRITE_COLS, art_desart_precedente = art_desart attuale
                 art_desart_current = to_clean_str(full_row.get("art_desart", ""))
                 result = upsert_in_source(ws, values_map, art_desart_current)
+
+                # ===== Verifica e correzione mirata su cella 'Azienda' =====
+                col_map = ensure_headers(ws, WRITE_COLS)  # case-insensitive
+                row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
+
+                if row_number is None:
+                    st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
+                else:
+                    # leggo il valore realmente presente su Google Sheets
+                    a1_azienda = rowcol_to_a1(row_number, col_map["Azienda"])
+                    current_sheet_val = ws.acell(a1_azienda).value or ""
+                    if normalize_spaces(current_sheet_val) != normalize_spaces(values_map["Azienda"]):
+                        # forza la cella
+                        ws.update(a1_azienda, [[values_map["Azienda"]]], value_input_option="USER_ENTERED")
+                        st.info(f"🔧 Ho forzato la cella {a1_azienda} = «{values_map['Azienda']}»")
 
                 # ✅ aggiorna DB locale (solo WRITE_COLS)
                 df_local = st.session_state["df"].copy()
@@ -739,10 +750,16 @@ with right:
                 if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
                     st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
 
-                if result == "updated":
-                    st.success(f"✅ Riga {art_val} aggiornata (Azienda: {values_map['Azienda']}).")
-                elif result == "added":
-                    st.success(f"✅ Nuova riga {art_val} aggiunta (Azienda: {values_map['Azienda']}).")
+                # messaggio chiaro (leggo di nuovo dal foglio per conferma)
+                if row_number is not None:
+                    # rileggo per mostrare il valore finale in Sheets
+                    final_val = ws.acell(rowcol_to_a1(row_number, col_map["Azienda"])).value or ""
+                    st.success(f"✅ Riga {art_val} aggiornata. Azienda in origine: «{final_val}».")
+                else:
+                    if result == "updated":
+                        st.success(f"✅ Riga {art_val} aggiornata (Azienda: {values_map['Azienda']}).")
+                    elif result == "added":
+                        st.success(f"✅ Nuova riga {art_val} aggiunta (Azienda: {values_map['Azienda']}).")
 
                 st.toast("Salvato!", icon="✅")
                 st.rerun()
