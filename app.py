@@ -368,6 +368,8 @@ if "pending_azienda_by_art" not in st.session_state:
     st.session_state["pending_azienda_by_art"] = {}  # { art_kart: valore_azienda_norm }
 if "selected_azienda_by_art" not in st.session_state:
     st.session_state["selected_azienda_by_art"] = {}  # { art_kart: valore_azienda_norm }
+if "azienda_effective_by_art" not in st.session_state:
+    st.session_state["azienda_effective_by_art"] = {}  # { art_kart: valore_azienda_norm effettivo per salvataggio }
 
 # =========================================
 # FILTRI
@@ -455,29 +457,28 @@ with right:
         current_art_kart = to_clean_str(full_row.get("art_kart", ""))
         current_art_desart = to_clean_str(full_row.get("art_desart", ""))
         current_qxc = to_clean_str(full_row.get("QxC", ""))
-        current_art_qxcacq = to_clean_str(full_row.get("art_qxcacq", ""))
         current_azienda = normalize_spaces(full_row.get("Azienda", ""))
 
-        # ======= TESTATA compatta: art_qxcacq + QxC (senza etichetta) + art_desart =======
-        # Riga 1: art_qxcacq in evidenza + pill QxC (solo valore)
-        # Riga 2: art_desart (in tono minore)
-        pill_qxc = ""
-        if current_qxc:
-            pill_qxc = (
-                f'<span style="background:#eef0f3;border:1px solid #d5d8dc;border-radius:6px;'
-                f'padding:2px 6px;margin-left:6px;font-size:0.85em;">{current_qxc}</span>'
-            )
-        line1 = ""
-        if current_art_qxcacq:
-            line1 = f"<div style='font-size:1.08rem;font-weight:700;line-height:1.25'>{current_art_qxcacq}{pill_qxc}</div>"
-        elif current_qxc:  # fallback se manca art_qxcacq
-            line1 = f"<div style='font-size:1.08rem;font-weight:700;line-height:1.25'>{pill_qxc}</div>"
-
-        line2 = ""
+        # ======= TESTATA: prima art_desart, poi le due pill (art_kart e QxC) con lo stesso stile =======
+        # Riga 1: art_desart
+        line_desc = ""
         if current_art_desart:
-            line2 = f"<div style='font-size:0.92rem;color:#444;margin-top:2px;'>{current_art_desart}</div>"
+            line_desc = f"<div style='font-size:0.98rem;font-weight:600;line-height:1.25;'>{current_art_desart}</div>"
 
-        st.markdown(line1 + line2, unsafe_allow_html=True)
+        # Riga 2: due pill affiancate: art_kart + QxC (solo valore)
+        # Stesso carattere/stile per entrambe
+        pill_style = (
+            "display:inline-block;background:#eef0f3;border:1px solid #d5d8dc;border-radius:8px;"
+            "padding:4px 8px;margin-right:6px;font-size:0.98rem;line-height:1.2;"
+        )
+        pill_line = "<div style='margin-top:4px;'>"
+        if current_art_kart:
+            pill_line += f"<span style='{pill_style}'>{current_art_kart}</span>"
+        if current_qxc:
+            pill_line += f"<span style='{pill_style}'>{current_qxc}</span>"
+        pill_line += "</div>"
+
+        st.markdown(line_desc + pill_line, unsafe_allow_html=True)
 
         # ======= (SPOSTATO) SUGGERIMENTI SIMILI SOPRA "AZIENDA" =======
         try:
@@ -529,7 +530,7 @@ with right:
             pass
 
         # =========================
-        # CAMPO "Azienda" – select compatta + icon-buttons
+        # CAMPO "Azienda" – select compatta + icon-buttons (con valore effettivo deterministico)
         # =========================
 
         @st.dialog("Rinomina valore «Azienda»")
@@ -566,6 +567,7 @@ with right:
                         refresh_unique_aziende_cache()
                         st.session_state["data_version"] += 1
                         st.session_state["pending_azienda_by_art"][current_art_kart] = new_clean
+                        st.session_state["azienda_effective_by_art"][current_art_kart] = new_clean
 
                         st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
                         st.toast("Azienda rinominata globalmente", icon="✅")
@@ -593,77 +595,75 @@ with right:
                             key=lambda x: x.lower()
                         )
                     st.session_state["pending_azienda_by_art"][current_art_kart] = cand
+                    st.session_state["azienda_effective_by_art"][current_art_kart] = cand
                     st.toast(f"✅ Creato nuovo valore: {cand}")
                     st.rerun()
             with col2:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-# --- PRESELEZIONE AZIENDA con chiave dinamica PER RIGA ---
-unique_aziende = st.session_state.get("unique_aziende", [])
-pending_map = st.session_state.get("pending_azienda_by_art", {})
-selected_map = st.session_state.get("selected_azienda_by_art", {})
-effective_map = st.session_state.setdefault("azienda_effective_by_art", {})  # <-- nuovo contenitore “effettivo”
+        # --- PRESELEZIONE AZIENDA con chiave dinamica PER RIGA ---
+        unique_aziende = st.session_state.get("unique_aziende", [])
+        pending_map = st.session_state.get("pending_azienda_by_art", {})
+        selected_map = st.session_state.get("selected_azienda_by_art", {})
+        effective_map = st.session_state.get("azienda_effective_by_art", {})
 
-pending_val = pending_map.get(current_art_kart, None)
-# priorità per la preselezione visiva nel select
-preselect_value = normalize_spaces(
-    selected_map.get(current_art_kart) or
-    pending_val or
-    current_azienda
-)
+        pending_val = pending_map.get(current_art_kart, None)
+        preselect_value = normalize_spaces(
+            selected_map.get(current_art_kart) or
+            pending_val or
+            current_azienda
+        )
 
-options = [""] + unique_aziende
-if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
-    options.append(preselect_value)
+        options = [""] + unique_aziende
+        if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
+            options.append(preselect_value)
 
-azienda_select_key = (
-    f"azienda_select_{to_clean_str(current_art_kart)}_"
-    f"{abs(hash(norm_key(preselect_value)))%100000}"
-)
+        azienda_select_key = (
+            f"azienda_select_{to_clean_str(current_art_kart)}_"
+            f"{abs(hash(norm_key(preselect_value)))%100000}"
+        )
 
-st.markdown(
-    """
-    <style>
-    .compact-icon-btn button { padding: 0.35rem 0.45rem !important; border-radius: 6px; }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+        st.markdown(
+            """
+            <style>
+            .compact-icon-btn button { padding: 0.35rem 0.45rem !important; border-radius: 6px; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
 
-c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
-with c1:
-    azienda_selected = st.selectbox(
-        " ",
-        options=options,
-        index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
-        key=azienda_select_key,
-        label_visibility="collapsed",
-    )
-    # Aggiorno **solo** gli state coerenti
-    selected_map[current_art_kart] = normalize_spaces(azienda_selected)
-    # L’“effective” è il valore che useremo **sempre** in salvataggio (deterministico)
-    effective_map[current_art_kart] = normalize_spaces(
-        selected_map.get(current_art_kart) or
-        pending_map.get(current_art_kart) or
-        azienda_selected or
-        current_azienda
-    )
+        c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
+        with c1:
+            azienda_selected = st.selectbox(
+                " ",
+                options=options,
+                index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
+                key=azienda_select_key,
+                label_visibility="collapsed",
+            )
+            # aggiorno gli state coerenti
+            selected_map[current_art_kart] = normalize_spaces(azienda_selected)
+            effective_map[current_art_kart] = normalize_spaces(
+                selected_map.get(current_art_kart) or
+                pending_map.get(current_art_kart) or
+                azienda_selected or
+                current_azienda
+            )
 
-with c2:
-    edit_disabled = not bool(azienda_selected)
-    st.write("")
-    if st.button("✏️", help="Rinomina globalmente il valore selezionato",
-                 disabled=edit_disabled,
-                 key=f"btn_edit_{current_art_kart}"):
-        dialog_rinomina_azienda(azienda_selected)
-with c3:
-    st.write("")
-    if st.button("➕", help="Crea un nuovo valore per Azienda", key=f"btn_add_{current_art_kart}"):
-        dialog_crea_azienda("")
+        with c2:
+            edit_disabled = not bool(azienda_selected)
+            st.write("")
+            if st.button("✏️", help="Rinomina globalmente il valore selezionato",
+                         disabled=edit_disabled,
+                         key=f"btn_edit_{current_art_kart}"):
+                dialog_rinomina_azienda(azienda_selected)
+        with c3:
+            st.write("")
+            if st.button("➕", help="Crea un nuovo valore per Azienda", key=f"btn_add_{current_art_kart}"):
+                dialog_crea_azienda("")
 
-# ⚠️ NON consumare più il pending qui: lo svuotiamo **solo dopo** un salvataggio riuscito
-
+        # ⚠️ NON consumiamo il pending qui: lo svuotiamo solo dopo salvataggio riuscito
 
         # =========================
         # Editor per gli altri campi (Azienda è sopra)
@@ -699,14 +699,20 @@ with c3:
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # === SORGENTE AZIENDA DA SALVARE (ordine di priorità) ===
-                chosen_azienda = st.session_state["selected_azienda_by_art"].get(current_art_kart, "")
+                # === SORGENTE AZIENDA **DETERMINISTICA** ===
+                effective_map = st.session_state.get("azienda_effective_by_art", {}) or {}
+                chosen_azienda = effective_map.get(current_art_kart)
+
+                # Fallback robusti
+                if not chosen_azienda:
+                    chosen_azienda = st.session_state["selected_azienda_by_art"].get(current_art_kart, "")
                 if not chosen_azienda:
                     chosen_azienda = st.session_state["pending_azienda_by_art"].get(current_art_kart, "")
                 if not chosen_azienda:
                     chosen_azienda = normalize_spaces(azienda_selected)
                 if not chosen_azienda:
                     chosen_azienda = current_azienda
+
                 values_map["Azienda"] = normalize_spaces(chosen_azienda)
 
                 # art_kart obbligatorio
@@ -745,7 +751,12 @@ with c3:
                         ws.update(a1_azienda, [[values_map["Azienda"]]], value_input_option="USER_ENTERED")
                         st.info(f"🔧 Ho forzato la cella {a1_azienda} = «{values_map['Azienda']}»")
 
-                # ✅ aggiorna DB locale (solo WRITE_COLS)
+                # piccolo refresh dal file origine per evitare rimbalzi
+                st.cache_data.clear()
+                st.session_state["df"] = load_df(creds_json, SOURCE_URL)
+                df = st.session_state["df"]
+
+                # ✅ aggiorna DB locale (solo WRITE_COLS) — ridondante dopo refresh, ma harmless
                 df_local = st.session_state["df"].copy()
                 for c in WRITE_COLS:
                     if c not in df_local.columns:
@@ -774,15 +785,15 @@ with c3:
                         )
                 st.session_state["data_version"] += 1
 
-                # pulizia per riga
+                # pulizia per riga **solo dopo successo**
                 st.session_state["pending_azienda_by_art"].pop(current_art_kart, None)
                 st.session_state["selected_azienda_by_art"].pop(current_art_kart, None)
+                st.session_state.get("azienda_effective_by_art", {}).pop(current_art_kart, None)
                 if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
                     st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
 
                 # messaggio chiaro (leggo di nuovo dal foglio per conferma)
                 if row_number is not None:
-                    # rileggo per mostrare il valore finale in Sheets
                     final_val = ws.acell(rowcol_to_a1(row_number, col_map["Azienda"])).value or ""
                     st.success(f"✅ Riga {art_val} aggiornata. Azienda in origine: «{final_val}».")
                 else:
