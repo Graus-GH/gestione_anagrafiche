@@ -361,9 +361,11 @@ def refresh_unique_aziende_cache():
 if "unique_aziende" not in st.session_state:
     refresh_unique_aziende_cache()
 
-# --- STATE PER PRESELEZIONE AZIENDA PER RIGA ---
+# --- STATE PER PRESELEZIONE/SALVATAGGIO AZIENDA PER RIGA ---
 if "pending_azienda_by_art" not in st.session_state:
     st.session_state["pending_azienda_by_art"] = {}  # { art_kart: valore_azienda_norm }
+if "selected_azienda_by_art" not in st.session_state:
+    st.session_state["selected_azienda_by_art"] = {}  # { art_kart: valore_azienda_norm }
 
 # =========================================
 # FILTRI
@@ -565,6 +567,9 @@ with right:
                 key=azienda_select_key,
                 label_visibility="collapsed",
             )
+            # <- registra SEMPRE la scelta corrente per questa riga
+            st.session_state["selected_azienda_by_art"][current_art_kart] = normalize_spaces(azienda_selected)
+
         with c2:
             edit_disabled = not bool(azienda_selected)
             st.write("")
@@ -664,11 +669,19 @@ with right:
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                # Aggiungi Azienda dal select (se vuota, preserva quella corrente)
-                selected_clean = normalize_spaces(azienda_selected)
-                if not selected_clean:
-                    selected_clean = current_azienda
-                values_map["Azienda"] = selected_clean
+                # === SORGENTE AZIENDA DA SALVARE (ordine di priorità) ===
+                # 1) scelta esplicita registrata nel widget per questa riga
+                # 2) pending da copia per questa riga (se ancora presente, raro)
+                # 3) valore mostrato nel select corrente
+                # 4) valore attuale della riga
+                chosen_azienda = st.session_state["selected_azienda_by_art"].get(current_art_kart, "")
+                if not chosen_azienda:
+                    chosen_azienda = st.session_state["pending_azienda_by_art"].get(current_art_kart, "")
+                if not chosen_azienda:
+                    chosen_azienda = normalize_spaces(azienda_selected)
+                if not chosen_azienda:
+                    chosen_azienda = current_azienda
+                values_map["Azienda"] = normalize_spaces(chosen_azienda)
 
                 # art_kart obbligatorio
                 art_val = to_clean_str(values_map.get("art_kart", ""))
@@ -720,14 +733,16 @@ with right:
                         )
                 st.session_state["data_version"] += 1
 
-                # pulisco eventuale prefill usato
+                # pulizia per riga
+                st.session_state["pending_azienda_by_art"].pop(current_art_kart, None)
+                st.session_state["selected_azienda_by_art"].pop(current_art_kart, None)
                 if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
                     st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
 
                 if result == "updated":
-                    st.success("✅ Riga aggiornata. UI aggiornata subito.")
+                    st.success(f"✅ Riga {art_val} aggiornata (Azienda: {values_map['Azienda']}).")
                 elif result == "added":
-                    st.success("✅ Nuova riga aggiunta. UI aggiornata subito.")
+                    st.success(f"✅ Nuova riga {art_val} aggiunta (Azienda: {values_map['Azienda']}).")
 
                 st.toast("Salvato!", icon="✅")
                 st.rerun()
