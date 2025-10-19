@@ -599,57 +599,71 @@ with right:
                 if st.button("❌ Annulla"):
                     st.rerun()
 
-        # --- PRESELEZIONE AZIENDA con chiave dinamica PER RIGA ---
-        unique_aziende = st.session_state.get("unique_aziende", [])
-        pending_map = st.session_state.get("pending_azienda_by_art", {})
-        pending_val = pending_map.get(current_art_kart, None)
-        preselect_value = normalize_spaces(pending_val if pending_val is not None else current_azienda)
+# --- PRESELEZIONE AZIENDA con chiave dinamica PER RIGA ---
+unique_aziende = st.session_state.get("unique_aziende", [])
+pending_map = st.session_state.get("pending_azienda_by_art", {})
+selected_map = st.session_state.get("selected_azienda_by_art", {})
+effective_map = st.session_state.setdefault("azienda_effective_by_art", {})  # <-- nuovo contenitore “effettivo”
 
-        options = [""] + unique_aziende
-        if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
-            options.append(preselect_value)
+pending_val = pending_map.get(current_art_kart, None)
+# priorità per la preselezione visiva nel select
+preselect_value = normalize_spaces(
+    selected_map.get(current_art_kart) or
+    pending_val or
+    current_azienda
+)
 
-        azienda_select_key = (
-            f"azienda_select_{to_clean_str(current_art_kart)}_"
-            f"{abs(hash(norm_key(preselect_value)))%100000}"
-        )
+options = [""] + unique_aziende
+if preselect_value and all(norm_key(preselect_value) != norm_key(v) for v in options):
+    options.append(preselect_value)
 
-        st.markdown(
-            """
-            <style>
-            .compact-icon-btn button { padding: 0.35rem 0.45rem !important; border-radius: 6px; }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
+azienda_select_key = (
+    f"azienda_select_{to_clean_str(current_art_kart)}_"
+    f"{abs(hash(norm_key(preselect_value)))%100000}"
+)
 
-        c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
-        with c1:
-            azienda_selected = st.selectbox(
-                " ",
-                options=options,
-                index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
-                key=azienda_select_key,
-                label_visibility="collapsed",
-            )
-            # <- registra SEMPRE la scelta corrente per questa riga
-            st.session_state["selected_azienda_by_art"][current_art_kart] = normalize_spaces(azienda_selected)
+st.markdown(
+    """
+    <style>
+    .compact-icon-btn button { padding: 0.35rem 0.45rem !important; border-radius: 6px; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-        with c2:
-            edit_disabled = not bool(azienda_selected)
-            st.write("")
-            if st.button("✏️", help="Rinomina globalmente il valore selezionato",
-                         disabled=edit_disabled,
-                         key=f"btn_edit_{current_art_kart}"):
-                dialog_rinomina_azienda(azienda_selected)
-        with c3:
-            st.write("")
-            if st.button("➕", help="Crea un nuovo valore per Azienda", key=f"btn_add_{current_art_kart}"):
-                dialog_crea_azienda("")
+c1, c2, c3 = st.columns([0.8, 0.1, 0.1])
+with c1:
+    azienda_selected = st.selectbox(
+        " ",
+        options=options,
+        index=next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(preselect_value)), 0),
+        key=azienda_select_key,
+        label_visibility="collapsed",
+    )
+    # Aggiorno **solo** gli state coerenti
+    selected_map[current_art_kart] = normalize_spaces(azienda_selected)
+    # L’“effective” è il valore che useremo **sempre** in salvataggio (deterministico)
+    effective_map[current_art_kart] = normalize_spaces(
+        selected_map.get(current_art_kart) or
+        pending_map.get(current_art_kart) or
+        azienda_selected or
+        current_azienda
+    )
 
-        # Consuma il pending SOLO per questa riga
-        if current_art_kart in st.session_state["pending_azienda_by_art"]:
-            st.session_state["pending_azienda_by_art"].pop(current_art_kart, None)
+with c2:
+    edit_disabled = not bool(azienda_selected)
+    st.write("")
+    if st.button("✏️", help="Rinomina globalmente il valore selezionato",
+                 disabled=edit_disabled,
+                 key=f"btn_edit_{current_art_kart}"):
+        dialog_rinomina_azienda(azienda_selected)
+with c3:
+    st.write("")
+    if st.button("➕", help="Crea un nuovo valore per Azienda", key=f"btn_add_{current_art_kart}"):
+        dialog_crea_azienda("")
+
+# ⚠️ NON consumare più il pending qui: lo svuotiamo **solo dopo** un salvataggio riuscito
+
 
         # =========================
         # Editor per gli altri campi (Azienda è sopra)
