@@ -894,85 +894,85 @@ with right:
         )
         save_btn_label = "✅ Salvato" if just_saved else "💾 Salva nell'origine"
 
-        # Bottone e badge sulla stessa riga
-        col_btn, col_badge = st.columns([0.28, 0.72])
-
+        # Bottone e badge sulla stessa riga (vicinissimi)
+        col_btn, col_badge = st.columns([0.15, 0.85])
         with col_btn:
-            if st.button(save_btn_label, key=f"save_btn_{current_art_kart}"):
-                try:
-                    values_map = {}
-                    for _, r in edited_detail.iterrows():
-                        campo = to_clean_str(r.get("Campo", ""))
-                        if campo and campo in other_cols:
-                            values_map[campo] = to_clean_str(r.get("Valore", ""))
-                    for field in SELECT_FIELDS:
-                        values_map[field] = normalize_spaces(current_select_values.get(field, ""))
-                    art_val = to_clean_str(full_row.get("art_kart", "")) or to_clean_str(values_map.get("art_kart", ""))
-                    if not art_val:
-                        st.error("Campo 'art_kart' obbligatorio."); st.stop()
-                    values_map["art_kart"] = art_val
+            save_clicked = st.button(save_btn_label, key=f"save_btn_{current_art_kart}")
 
-                    creds_json = json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json())
-                    gc = get_gc(creds_json)
-                    spreadsheet_id, gid = parse_sheet_url(SOURCE_URL)
-                    ws = next((w for w in gc.open_by_key(spreadsheet_id).worksheets() if str(w.id) == str(gid)), None)
-                    if ws is None:
-                        raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
-
-                    art_desart_current = to_clean_str(full_row.get("art_desart", ""))
-                    result = upsert_in_source(ws, values_map, art_desart_current)
-
-                    col_map = ensure_headers(ws, list(dict.fromkeys(WRITE_COLS + ["art_kart"])))
-                    row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
-                    if row_number is not None:
-                        to_force = []
-                        for field in SELECT_FIELDS:
-                            a1 = rowcol_to_a1(row_number, col_map[field])
-                            current_sheet_val = ws.acell(a1).value or ""
-                            if normalize_spaces(current_sheet_val) != normalize_spaces(values_map[field]):
-                                to_force.append((a1, values_map[field]))
-                        for a1, v in to_force:
-                            ws.update(a1, [[v]], value_input_option="USER_ENTERED")
-                        if to_force:
-                            st.info(f"🔧 Aggiornate {len(to_force)} celle con i valori selezionati.")
-                    else:
-                        st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
-
-                    # aggiorna effective + df locale
-                    for field in SELECT_FIELDS:
-                        st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
-                    mask_row = df["art_kart"].map(to_clean_str) == art_val
-                    if mask_row.any():
-                        for field in SELECT_FIELDS:
-                            df.loc[mask_row, field] = normalize_spaces(values_map[field])
-                        for c in other_cols:
-                            df.loc[mask_row, c] = normalize_spaces(values_map.get(c, ""))
-                        st.session_state["df"] = df
-
-                    # snapshot per il badge
-                    snapshot_new = {}
-                    for f in SELECT_FIELDS:
-                        snapshot_new[f] = normalize_spaces(values_map[f])
-                    for c in other_cols:
-                        snapshot_new[c] = normalize_spaces(values_map.get(c, ""))
-                    st.session_state["last_saved_by_art"][current_art_kart] = snapshot_new
-                    st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": True}
-
-                    if result == "updated":
-                        st.success(f"✅ Riga {art_val} aggiornata.")
-                    elif result == "added":
-                        st.success(f"✅ Nuova riga {art_val} aggiunta.")
-                    st.toast("Salvato!", icon="✅")
-
-                except Exception as e:
-                    st.error("❌ Errore durante il salvataggio:")
-                    st.exception(e)
-
-        # Mostra il badge alla destra del bottone (sempre)
         with col_badge:
             st.markdown(
-                f"<div style='display:flex;align-items:center;height:38px;'>{badge_html}</div>",
+                f"<div style='display:flex;align-items:center;gap:10px;margin-left:-8px;'>{badge_html}</div>",
                 unsafe_allow_html=True,
             )
-# <<< END BLOCK: DETTAGLIO – SALVA ---------------------------------------------
 
+        # Esegui il salvataggio solo se cliccato
+        if save_clicked:
+            try:
+                values_map = {}
+                for _, r in edited_detail.iterrows():
+                    campo = to_clean_str(r.get("Campo", ""))
+                    if campo and campo in other_cols:
+                        values_map[campo] = to_clean_str(r.get("Valore", ""))
+                for field in SELECT_FIELDS:
+                    values_map[field] = normalize_spaces(current_select_values.get(field, ""))
+                art_val = to_clean_str(full_row.get("art_kart", "")) or to_clean_str(values_map.get("art_kart", ""))
+                if not art_val:
+                    st.error("Campo 'art_kart' obbligatorio."); st.stop()
+                values_map["art_kart"] = art_val
+
+                creds_json = json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json())
+                gc = get_gc(creds_json)
+                spreadsheet_id, gid = parse_sheet_url(SOURCE_URL)
+                ws = next((w for w in gc.open_by_key(spreadsheet_id).worksheets() if str(w.id) == str(gid)), None)
+                if ws is None:
+                    raise RuntimeError(f"Nessun worksheet con gid={gid} nell'origine.")
+
+                art_desart_current = to_clean_str(full_row.get("art_desart", ""))
+                result = upsert_in_source(ws, values_map, art_desart_current)
+
+                col_map = ensure_headers(ws, list(dict.fromkeys(WRITE_COLS + ["art_kart"])))
+                row_number = find_row_number_by_art_kart_ws(ws, col_map, art_val)
+                if row_number is not None:
+                    to_force = []
+                    for field in SELECT_FIELDS:
+                        a1 = rowcol_to_a1(row_number, col_map[field])
+                        current_sheet_val = ws.acell(a1).value or ""
+                        if normalize_spaces(current_sheet_val) != normalize_spaces(values_map[field]):
+                            to_force.append((a1, values_map[field]))
+                    for a1, v in to_force:
+                        ws.update(a1, [[v]], value_input_option="USER_ENTERED")
+                    if to_force:
+                        st.info(f"🔧 Aggiornate {len(to_force)} celle con i valori selezionati.")
+                else:
+                    st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
+
+                # aggiorna effective + df locale
+                for field in SELECT_FIELDS:
+                    st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
+                mask_row = df["art_kart"].map(to_clean_str) == art_val
+                if mask_row.any():
+                    for field in SELECT_FIELDS:
+                        df.loc[mask_row, field] = normalize_spaces(values_map[field])
+                    for c in other_cols:
+                        df.loc[mask_row, c] = normalize_spaces(values_map.get(c, ""))
+                    st.session_state["df"] = df
+
+                # snapshot per il badge
+                snapshot_new = {}
+                for f in SELECT_FIELDS:
+                    snapshot_new[f] = normalize_spaces(values_map[f])
+                for c in other_cols:
+                    snapshot_new[c] = normalize_spaces(values_map.get(c, ""))
+                st.session_state["last_saved_by_art"][current_art_kart] = snapshot_new
+                st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": True}
+
+                if result == "updated":
+                    st.success(f"✅ Riga {art_val} aggiornata.")
+                elif result == "added":
+                    st.success(f"✅ Nuova riga {art_val} aggiunta.")
+                st.toast("Salvato!", icon="✅")
+
+            except Exception as e:
+                st.error("❌ Errore durante il salvataggio:")
+                st.exception(e)
+# <<< END BLOCK: DETTAGLIO – SALVA ---------------------------------------------
