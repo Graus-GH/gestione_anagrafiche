@@ -535,12 +535,15 @@ with right:
                         st.session_state["prefill_by_art_kart"] = {}
                     st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
 
+                    # ✅ Aggiorna anche i dropdown: mappe + widget state
                     for field in SELECT_FIELDS:
-                        if prefill.get(field):
-                            v = normalize_spaces(prefill[field])
+                        v = normalize_spaces(prefill.get(field, ""))
+                        if v:
                             st.session_state["pending_by_field"][field][current_art_kart] = v
                             st.session_state["selected_by_field"][field][current_art_kart] = v
                             st.session_state["effective_by_field"][field][current_art_kart] = v
+                            ui_key = f"select_{field}_{current_art_kart}"
+                            st.session_state[ui_key] = v  # <-- forza l'UI a mostrare subito il valore copiato
 
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
                     st.rerun()
@@ -619,6 +622,9 @@ with right:
                     st.session_state["pending_by_field"][col_name][current_art_kart] = cand
                     st.session_state["selected_by_field"][col_name][current_art_kart] = cand
                     st.session_state["effective_by_field"][col_name][current_art_kart] = cand
+                    # aggiorna subito il widget
+                    ui_key = f"select_{col_name}_{current_art_kart}"
+                    st.session_state[ui_key] = cand
                     st.toast(f"✅ Creato nuovo valore per {col_name}: {cand}")
                     st.rerun()
             with c2:
@@ -636,7 +642,7 @@ with right:
             effective_map= st.session_state["effective_by_field"][col_name]
             unique_opts  = st.session_state["unique_options_by_field"].get(col_name, [])
 
-            # Valore di default mostrato nel select (senza toccare session_state)
+            # Valore di default mostrato nel select (senza toccare session_state durante il render)
             default_value = (
                 effective_map.get(current_art_kart)
                 or selected_map.get(current_art_kart)
