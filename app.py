@@ -1,4 +1,8 @@
+# =========================================
 # app.py – dettaglio riga più largo, label a sinistra del dropdown, layout super-compatto
+# =========================================
+
+# >>> BLOCK: IMPORTS -----------------------------------------------------------
 import json
 import re
 import html
@@ -14,10 +18,10 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+# <<< END BLOCK: IMPORTS -------------------------------------------------------
 
-# =========================================
-# CONFIG
-# =========================================
+
+# >>> BLOCK: CONFIG E COSTANTI -------------------------------------------------
 st.set_page_config(page_title="📚 Catalogo Articoli – Edit in-place", layout="wide")
 
 SCOPES = [
@@ -51,10 +55,10 @@ SELECT_FIELDS = ["Azienda", "Prodotto", "gradazione", "annata", "Packaging", "No
 
 # Campi copiati dal “simile” (inclusi i select)
 COPY_FIELDS = ["Azienda", "Prodotto", "gradazione", "annata", "Packaging", "Note", "URL_immagine"]
+# <<< END BLOCK: CONFIG E COSTANTI ---------------------------------------------
 
-# =========================================
-# HELPERS
-# =========================================
+
+# >>> BLOCK: HELPERS (STRINGHE, NORMALIZZAZIONE, DIFF) -------------------------
 def to_clean_str(x):
     if x is None:
         return ""
@@ -136,10 +140,10 @@ def diff_old_new_html(old: str, new: str) -> tuple[str, str]:
             if seg_old: old_out.append(f"<span class='diff-del'>{seg_old}</span>")
             if seg_new: new_out.append(f"<span class='diff-ins'>{seg_new}</span>")
     return "".join(old_out), "".join(new_out)
+# <<< END BLOCK: HELPERS -------------------------------------------------------
 
-# =========================================
-# OAUTH
-# =========================================
+
+# >>> BLOCK: OAUTH --------------------------------------------------------------
 def build_flow() -> Flow:
     oc = st.secrets["oauth_client"]
     client_conf = {
@@ -201,10 +205,10 @@ def get_creds():
 def get_gc(creds_json: dict) -> gspread.Client:
     creds = Credentials.from_authorized_user_info(creds_json, SCOPES)
     return gspread.authorize(creds)
+# <<< END BLOCK: OAUTH ----------------------------------------------------------
 
-# =========================================
-# LOAD ORIGINE (lettura)
-# =========================================
+
+# >>> BLOCK: DATA LOAD (LETTURA ORIGINE) ---------------------------------------
 @st.cache_data(ttl=300, show_spinner=True)
 def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     gc = get_gc(creds_json)
@@ -226,10 +230,10 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
             df[c] = df[c].map(to_clean_str)
     df["art_kart"] = df["art_kart"].map(to_clean_str)
     return df
+# <<< END BLOCK: DATA LOAD ------------------------------------------------------
 
-# =========================================
-# SCRITTURA: utilities
-# =========================================
+
+# >>> BLOCK: DATA WRITE (UTILITY SCRITTURA) ------------------------------------
 def ensure_headers(ws: gspread.Worksheet, required_cols: list[str]) -> dict:
     header = ws.row_values(1) or []
     header = [h if h is not None else "" for h in header]
@@ -308,10 +312,10 @@ def batch_find_replace_generic(ws: gspread.Worksheet, col_name: str, old_value: 
         return int(res["replies"][0]["findReplace"]["occurrencesChanged"])
     except Exception:
         return 0
+# <<< END BLOCK: DATA WRITE -----------------------------------------------------
 
-# =========================================
-# APP STATE & DIAGNOSTICA
-# =========================================
+
+# >>> BLOCK: SIDEBAR – LOGIN & DIAGNOSTICA -------------------------------------
 st.sidebar.header("🔐 Autenticazione Google")
 creds = get_creds()
 if not creds:
@@ -349,8 +353,10 @@ with st.sidebar.expander("🧪 Diagnostica scrittura", expanded=False):
             st.success("Scrittura di prova riuscita! (cella Z1)")
     except Exception as e:
         st.error(f"Diagnostica: {e}")
+# <<< END BLOCK: SIDEBAR – LOGIN & DIAGNOSTICA ---------------------------------
 
-# ========= Stato =========
+
+# >>> BLOCK: STATO APP E CACHE OPZIONI -----------------------------------------
 if "data_version" not in st.session_state:
     st.session_state["data_version"] = 0
 if "df" not in st.session_state:
@@ -389,10 +395,10 @@ def ensure_field_maps():
     if "effective_by_field" not in st.session_state:
         st.session_state["effective_by_field"] = {f:{} for f in SELECT_FIELDS}
 ensure_field_maps()
+# <<< END BLOCK: STATO APP E CACHE OPZIONI -------------------------------------
 
-# =========================================
-# FILTRI
-# =========================================
+
+# >>> BLOCK: SIDEBAR – FILTRI --------------------------------------------------
 st.sidebar.header("🎛️ Filtri")
 f_code = st.sidebar.text_input("art_kart (codice articolo)", placeholder="es. 12345", key="f_code")
 f_desc = st.sidebar.text_input("art_desart (descrizione Bollicine)", placeholder="testo libero", key="f_desc")
@@ -400,6 +406,7 @@ reparti = sorted([v for v in df.get("art_kmacro", pd.Series([], dtype=object)).d
 f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti, key="f_reps")
 pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0, key="f_pres")
 f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero", key="f_aff")
+
 # 🔄 Pulsante ricarica dal database
 if st.sidebar.button("🔄 Aggiorna dal database"):
     try:
@@ -434,10 +441,10 @@ if only_mod_si and "Mod?" in df.columns:
     mask &= df["Mod?"].map(lambda x: to_clean_str(x).upper() == "SI")
 
 filtered = df.loc[mask].copy()
+# <<< END BLOCK: SIDEBAR – FILTRI ----------------------------------------------
 
-# =========================================
-# MAIN: SX risultati, DX dettaglio (DX più largo)
-# =========================================
+
+# >>> BLOCK: LAYOUT PRINCIPALE (SX RISULTATI / DX DETTAGLIO) -------------------
 left, right = st.columns([1, 1.6], gap="large")
 
 with left:
@@ -476,9 +483,11 @@ with left:
         except Exception:
             selected_rows = []
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
+# <<< END BLOCK: LAYOUT SX ------------------------------------------------------
 
+
+# >>> BLOCK: UI STILI CSS DETTAGLIO --------------------------------------------
 with right:
-    # CSS
     st.markdown(
         """
         <style>
@@ -503,7 +512,10 @@ with right:
         """,
         unsafe_allow_html=True,
     )
+# <<< END BLOCK: UI STILI CSS DETTAGLIO ----------------------------------------
 
+
+# >>> BLOCK: DETTAGLIO – PREPARAZIONE RIGA CORRENTE ----------------------------
     if selected_row is None:
         st.info("Seleziona una riga nella tabella a sinistra.")
     else:
@@ -533,10 +545,12 @@ with right:
             st.session_state["last_saved_by_art"][current_art_kart] = base_snapshot
             st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": False}
             st.session_state["current_art_kart"] = current_art_kart
+# <<< END BLOCK: DETTAGLIO – PREPARAZIONE RIGA CORRENTE ------------------------
 
+
+# >>> BLOCK: DETTAGLIO – HEADER + CONCAT DINAMICA + DIFF -----------------------
         status_slot = st.empty()  # badge in alto
 
-        # ======= helper per valori correnti UI
         def get_current_value(field: str) -> str:
             eff_all = st.session_state["effective_by_field"].get(field, {})
             sel_all = st.session_state["selected_by_field"].get(field, {})
@@ -550,7 +564,7 @@ with right:
                 or full_row.get(field, "")
             )
 
-        # ======= TESTATA (titolo + pill sulla stessa riga)
+        # TESTATA
         pill_style = (
             "display:inline-block;background:#eef0f3;border:1px solid #d5d8dc;border-radius:8px;"
             "padding:2px 8px;margin-left:6px;font-size:0.86rem;line-height:1.2;"
@@ -565,7 +579,7 @@ with right:
         header_html += "</div>"
         st.markdown(header_html, unsafe_allow_html=True)
 
-        # ======= CONCAT DINAMICA SOTTO =======
+        # CONCAT DINAMICA
         azienda = get_current_value("Azienda")
         prodotto = get_current_value("Prodotto")
         grad = get_current_value("gradazione")
@@ -583,7 +597,7 @@ with right:
         if concat_line:
             st.markdown(f"<div style='color:#444;font-size:0.9rem;margin-top:4px;'>{html.escape(concat_line)}</div>", unsafe_allow_html=True)
 
-        # ======= DIFF visivo se Mod? = SI =======
+        # DIFF (se Mod? = SI)
         if current_mod_flag == "SI" and (current_prev_desart or current_art_desart):
             old_html, new_html = diff_old_new_html(current_prev_desart, current_art_desart)
             diff_block = f"""
@@ -594,10 +608,10 @@ with right:
             </div>
             """
             st.markdown(diff_block, unsafe_allow_html=True)
+# <<< END BLOCK: DETTAGLIO – HEADER/CONCAT/DIFF --------------------------------
 
-        # =========================
-        # SUGGERIMENTI SIMILI
-        # =========================
+
+# >>> BLOCK: DETTAGLIO – SUGGERIMENTI SIMILI -----------------------------------
         try:
             base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
             base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
@@ -639,10 +653,10 @@ with right:
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
         except Exception:
             pass
+# <<< END BLOCK: DETTAGLIO – SUGGERIMENTI SIMILI --------------------------------
 
-        # =========================
-        # Dialog: RINOMINA GLOBALE (con elenco righe interessate)
-        # =========================
+
+# >>> BLOCK: DIALOG – RINOMINA GLOBALE / CREA NUOVO ----------------------------
         @st.dialog("Rinomina valore globale")
         def dialog_rinomina_generica(col_name: str, old_val: str):
             st.write(f"Colonna: **{col_name}**")
@@ -691,7 +705,6 @@ with right:
                         st.session_state["effective_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state[f"select_{col_name}_{current_art_kart}"] = new_clean
 
-                        # rinomina non salva la riga ⇒ resta dirty
                         st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": False}
                         st.toast(f"✅ Rinomina completata: {changed} occorrenze aggiornate.", icon="✅")
                         st.rerun()
@@ -701,9 +714,6 @@ with right:
             with c2:
                 st.button("❌ Annulla")
 
-        # =========================
-        # Dialog: CREA NUOVO valore
-        # =========================
         @st.dialog("Crea nuovo valore")
         def dialog_crea_generica(col_name: str, default_text: str = ""):
             candidate = st.text_input("Nuovo valore", value=default_text, placeholder=f"es. nuovo valore per {col_name}")
@@ -726,10 +736,10 @@ with right:
                     st.rerun()
             with c2:
                 st.button("❌ Annulla")
+# <<< END BLOCK: DIALOG – RINOMINA / CREA --------------------------------------
 
-        # =========================
-        # RENDER SELECT COMPACT
-        # =========================
+
+# >>> BLOCK: DETTAGLIO – RENDER SELECT ROW + LOOP CAMPI ------------------------
         def render_select_row(col_name: str, full_row, current_art_kart: str):
             current_val = normalize_spaces(full_row.get(col_name, ""))
             pending_map  = st.session_state["pending_by_field"][col_name]
@@ -768,10 +778,10 @@ with right:
         for col_name in SELECT_FIELDS:
             with st.container():
                 render_select_row(col_name, full_row, current_art_kart)
+# <<< END BLOCK: DETTAGLIO – SELECT ROWS ---------------------------------------
 
-        # =========================
-        # Editor per gli altri campi (esclude i SELECT_FIELDS)
-        # =========================
+
+# >>> BLOCK: DETTAGLIO – EDITOR “ALTRI CAMPI” ----------------------------------
         other_cols = [c for c in WRITE_COLS if c not in SELECT_FIELDS]
         pairs = [{"Campo": c, "Valore": to_clean_str(full_row.get(c, ""))} for c in other_cols]
         prefill_map = (st.session_state.get("prefill_by_art_kart", {}) or {}).get(current_art_kart, {})
@@ -790,11 +800,10 @@ with right:
             key=detail_key,
             on_change=lambda: st.session_state["save_state_by_art"].update({current_art_kart: {"just_saved": False}}),
         )
+# <<< END BLOCK: DETTAGLIO – EDITOR “ALTRI CAMPI” ------------------------------
 
-        # =========================
-        # STATO SALVATO / NON SALVATO (snapshot)
-        # =========================
-        # valori correnti UI
+
+# >>> BLOCK: DETTAGLIO – STATO SALVATO/NON SALVATO -----------------------------
         current_select_values = {f: get_current_value(f) for f in SELECT_FIELDS}
         current_other_values = {}
         try:
@@ -805,7 +814,6 @@ with right:
         except Exception:
             current_other_values = {c: normalize_spaces(to_clean_str(full_row.get(c, ""))) for c in other_cols}
 
-        # snapshot ultimo salvataggio
         snapshot = st.session_state["last_saved_by_art"].get(current_art_kart, {})
         dirty_fields = []
         for f in SELECT_FIELDS:
@@ -822,10 +830,10 @@ with right:
         else:
             status_pill = "<span class='status-pill status-ok'><span class='dot dot-ok'></span> Dati salvati</span>"
         status_slot.markdown(f"<div style='display:flex;justify-content:flex-end;margin-bottom:8px;'>{status_pill}</div>", unsafe_allow_html=True)
+# <<< END BLOCK: DETTAGLIO – STATO SALVATAGGIO ---------------------------------
 
-        # =========================
-        # SALVA
-        # =========================
+
+# >>> BLOCK: DETTAGLIO – SALVA SU GOOGLE SHEETS --------------------------------
         just_saved = st.session_state["save_state_by_art"].get(current_art_kart, {}).get("just_saved", False) and not is_dirty
         save_btn_label = "✅ Salvato" if just_saved else "💾 Salva nell'origine"
         if st.button(save_btn_label, key=f"save_btn_{current_art_kart}"):
@@ -879,7 +887,7 @@ with right:
                         df.loc[mask_row, c] = normalize_spaces(values_map.get(c, ""))
                     st.session_state["df"] = df
 
-                # 🔁 aggiorna snapshot per il badge
+                # snapshot per il badge
                 snapshot_new = {}
                 for f in SELECT_FIELDS:
                     snapshot_new[f] = normalize_spaces(values_map[f])
@@ -897,3 +905,4 @@ with right:
             except Exception as e:
                 st.error("❌ Errore durante il salvataggio:")
                 st.exception(e)
+# <<< END BLOCK: DETTAGLIO – SALVA ---------------------------------------------
