@@ -535,7 +535,7 @@ with right:
                         st.session_state["prefill_by_art_kart"] = {}
                     st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
 
-                    # ✅ Aggiorna anche i dropdown: mappe + widget state
+                    # Aggiorna mappe + widget state per i dropdown
                     for field in SELECT_FIELDS:
                         v = normalize_spaces(prefill.get(field, ""))
                         if v:
@@ -543,15 +543,15 @@ with right:
                             st.session_state["selected_by_field"][field][current_art_kart] = v
                             st.session_state["effective_by_field"][field][current_art_kart] = v
                             ui_key = f"select_{field}_{current_art_kart}"
-                            st.session_state[ui_key] = v  # <-- forza l'UI a mostrare subito il valore copiato
+                            st.session_state[ui_key] = v
 
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
-                    st.rerun()
+
         except Exception:
             pass
 
         # =========================
-        # Dialog: RINOMINA GLOBALE
+        # Dialog: RINOMINA GLOBALE (senza rerun, senza salvataggi extra)
         # =========================
         @st.dialog("Rinomina valore globale")
         def dialog_rinomina_generica(col_name: str, old_val: str):
@@ -559,13 +559,15 @@ with right:
             st.write(f"Valore corrente: **{old_val}**")
             new_val = st.text_input("Nuovo nome", value="", placeholder=f"Nuovo valore per «{col_name}»…")
 
+            # Quante righe saranno toccate nello sheet
             X = int((df.get(col_name, pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val)).sum())
-            st.warning(f"⚠️ Modificherai **{X}** righe. Confermi?")
+            st.warning(f"⚠️ Modificherai **{X}** righe nel foglio. Confermi?")
 
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("✅ Conferma rinomina", disabled=(normalize_spaces(new_val) == "")):
                     try:
+                        # 1) Scrivi sul foglio (find & replace)
                         creds_json = json.loads(Credentials.from_authorized_user_info(
                             st.session_state["oauth_token"], SCOPES
                         ).to_json())
@@ -575,6 +577,7 @@ with right:
                         old_clean = normalize_spaces(old_val)
                         new_clean = normalize_spaces(new_val)
 
+                        # Se esiste già un'opzione identica (case-insensitive), riusa quella "canonica"
                         refresh_unique_cache(col_name)
                         for v in st.session_state["unique_options_by_field"].get(col_name, []):
                             if norm_key(v) == norm_key(new_clean):
@@ -583,25 +586,43 @@ with right:
 
                         changed = batch_find_replace_generic(ws, col_name, old_clean, new_clean)
 
-                        st.cache_data.clear()
-                        st.session_state["df"] = load_df(creds_json, SOURCE_URL)
-                        for f in SELECT_FIELDS:
-                            refresh_unique_cache(f)
-                        st.session_state["data_version"] += 1
+                        # 2) Aggiorna SUBITO lo stato locale (senza rerun)
+                        # 2a) df in memoria
+                        mask_local = df[col_name].map(norm_key) == norm_key(old_clean)
+                        df.loc[mask_local, col_name] = new_clean
+                        st.session_state["df"] = df  # riassegna per sicurezza
 
-                        st.session_state["pending_by_field"][col_name][current_art_kart] = new_clean
+                        # 2b) cache opzioni uniche per quel campo (sostituisci old->new e dedup)
+                        opts = st.session_state["unique_options_by_field"].get(col_name, [])
+                        opts = [new_clean if norm_key(o) == norm_key(old_clean) else o for o in opts]
+                        # se nuovo non presente, aggiungilo
+                        if all(norm_key(new_clean) != norm_key(o) for o in opts):
+                            opts.append(new_clean)
+                        # rimuovi duplicati case-insensitive preservando il primo
+                        dedup = {}
+                        for o in opts:
+                            k = norm_key(o)
+                            if k not in dedup:
+                                dedup[k] = o
+                        st.session_state["unique_options_by_field"][col_name] = sorted(dedup.values(), key=lambda x: x.lower())
+
+                        # 2c) aggiorna le mappe e il widget della riga corrente
+                        st.session_state["pending_by_field"][col_name][current_art_kart]  = new_clean
                         st.session_state["selected_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state["effective_by_field"][col_name][current_art_kart] = new_clean
+                        ui_key = f"select_{col_name}_{current_art_kart}"
+                        st.session_state[ui_key] = new_clean
 
-                        st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate.")
-                        st.toast(f"{col_name}: rinomina globale ok", icon="✅")
-                        st.rerun()
+                        st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate nel foglio.")
+                        st.toast("Valore rinominato globalmente. Puoi continuare ad editare.", icon="✅")
+
                     except Exception as e:
                         st.error("❌ Errore durante la rinomina globale:")
                         st.exception(e)
+
             with c2:
-                if st.button("❌ Annulla"):
-                    st.rerun()
+                # Nessun rerun: l'utente può chiudere il dialog e continuare a lavorare
+                st.button("❌ Annulla")
 
         # =========================
         # Dialog: CREA NUOVO valore
@@ -626,10 +647,8 @@ with right:
                     ui_key = f"select_{col_name}_{current_art_kart}"
                     st.session_state[ui_key] = cand
                     st.toast(f"✅ Creato nuovo valore per {col_name}: {cand}")
-                    st.rerun()
             with c2:
-                if st.button("❌ Annulla"):
-                    st.rerun()
+                st.button("❌ Annulla")
 
         # =========================
         # RENDER SELECT COMPACT: label a sinistra + select + ✏️ + ➕
@@ -783,35 +802,22 @@ with right:
                 else:
                     st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
 
-                st.cache_data.clear()
-                st.session_state["df"] = load_df(creds_json, SOURCE_URL)
-                df = st.session_state["df"]
-                for f in SELECT_FIELDS:
-                    refresh_unique_cache(f)
-
-                saved_row = df[df["art_kart"].map(to_clean_str) == art_val]
-                if not saved_row.empty:
-                    for field in SELECT_FIELDS:
-                        st.session_state["effective_by_field"][field][current_art_kart] = normalize_spaces(saved_row.iloc[0].get(field, values_map[field]))
-                else:
-                    for field in SELECT_FIELDS:
-                        st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
-
-                st.session_state["data_version"] += 1
+                # aggiorna stato locale minimo senza rerun completo
+                # (qui non tocchiamo cache_data globale)
+                # ricarico df in cache solo locale per coerenza visiva se servisse
+                # ma per evitare rerun, aggiorniamo direttamente la riga corrente
+                for field in SELECT_FIELDS:
+                    st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
 
                 if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
                     st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
 
-                if row_number is not None:
+                if result == "updated":
                     st.success(f"✅ Riga {art_val} aggiornata.")
-                else:
-                    if result == "updated":
-                        st.success(f"✅ Riga {art_val} aggiornata.")
-                    elif result == "added":
-                        st.success(f"✅ Nuova riga {art_val} aggiunta.")
+                elif result == "added":
+                    st.success(f"✅ Nuova riga {art_val} aggiunta.")
 
                 st.toast("Salvato!", icon="✅")
-                st.rerun()
 
             except Exception as e:
                 st.error("❌ Errore durante il salvataggio:")
