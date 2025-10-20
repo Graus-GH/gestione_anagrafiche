@@ -482,24 +482,55 @@ with right:
         current_art_desart = to_clean_str(full_row.get("art_desart", ""))
         current_qxc = to_clean_str(full_row.get("QxC", ""))
 
-        # ======= TESTATA =======
-        if current_art_desart:
-            st.markdown(
-                f"<div style='font-size:0.98rem;font-weight:600;line-height:1.25;'>{current_art_desart}</div>",
-                unsafe_allow_html=True,
+        # ======= FUNZIONE per leggere il valore "corrente" dei campi (UI > mappe > df) =======
+        def get_current_value(field: str) -> str:
+            eff_all = st.session_state["effective_by_field"].get(field, {})
+            sel_all = st.session_state["selected_by_field"].get(field, {})
+            pend_all = st.session_state["pending_by_field"].get(field, {})
+            ui_key = f"select_{field}_{to_clean_str(current_art_kart)}"
+            return normalize_spaces(
+                st.session_state.get(ui_key, "")
+                or eff_all.get(current_art_kart, "")
+                or sel_all.get(current_art_kart, "")
+                or pend_all.get(current_art_kart, "")
+                or full_row.get(field, "")
             )
 
+        # ======= TESTATA (titolo + pill sulla stessa riga) =======
         pill_style = (
             "display:inline-block;background:#eef0f3;border:1px solid #d5d8dc;border-radius:8px;"
-            "padding:4px 8px;margin-right:6px;font-size:0.98rem;line-height:1.2;"
+            "padding:2px 8px;margin-left:6px;font-size:0.86rem;line-height:1.2;"
         )
-        pill_line = "<div style='margin-top:4px;'>"
+        header_html = "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:6px;'>"
+        if current_art_desart:
+            header_html += f"<span style='font-size:0.98rem;font-weight:600;line-height:1.25;'>{current_art_desart}</span>"
         if current_art_kart:
-            pill_line += f"<span style='{pill_style}'>{current_art_kart}</span>"
+            header_html += f"<span style='{pill_style}'>#{current_art_kart}</span>"
         if current_qxc:
-            pill_line += f"<span style='{pill_style}'>{current_qxc}</span>"
-        pill_line += "</div>"
-        st.markdown(pill_line, unsafe_allow_html=True)
+            header_html += f"<span style='{pill_style}'>{current_qxc}</span>"
+        header_html += "</div>"
+        st.markdown(header_html, unsafe_allow_html=True)
+
+        # ======= RIGA SOTTO: concatenazione dinamica =======
+        azienda = get_current_value("Azienda")
+        prodotto = get_current_value("Prodotto")
+        grad = get_current_value("gradazione")
+        annata = get_current_value("annata")
+        pack = get_current_value("Packaging")
+        note = get_current_value("Note")
+
+        parts = []
+        if azienda:
+            parts.append(f"{azienda},")
+        for v in [prodotto, grad, annata, pack, note]:
+            if normalize_spaces(v):
+                parts.append(normalize_spaces(v))
+        if current_qxc:
+            parts.append(current_qxc)
+
+        concat_line = " ".join(parts).strip()
+        if concat_line:
+            st.markdown(f"<div style='color:#444;font-size:0.9rem;margin-top:4px;'>{concat_line}</div>", unsafe_allow_html=True)
 
         # ======= SUGGERIMENTI SIMILI =======
         try:
@@ -558,7 +589,6 @@ with right:
             st.write(f"Valore corrente: **{old_val}**")
             new_val = st.text_input("Nuovo nome", value="", placeholder=f"Nuovo valore per «{col_name}»…")
 
-            # Quante righe saranno toccate nello sheet
             X = int((df.get(col_name, pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val)).sum())
             st.warning(f"⚠️ Modificherai **{X}** righe nel foglio. Confermi?")
 
@@ -566,7 +596,6 @@ with right:
             with c1:
                 if st.button("✅ Conferma rinomina", disabled=(normalize_spaces(new_val) == "")):
                     try:
-                        # 1) Scrivi sul foglio (find & replace)
                         creds_json = json.loads(Credentials.from_authorized_user_info(
                             st.session_state["oauth_token"], SCOPES
                         ).to_json())
@@ -576,7 +605,6 @@ with right:
                         old_clean = normalize_spaces(old_val)
                         new_clean = normalize_spaces(new_val)
 
-                        # Se esiste già un'opzione identica (case-insensitive), riusa quella "canonica"
                         refresh_unique_cache(col_name)
                         for v in st.session_state["unique_options_by_field"].get(col_name, []):
                             if norm_key(v) == norm_key(new_clean):
@@ -585,13 +613,11 @@ with right:
 
                         changed = batch_find_replace_generic(ws, col_name, old_clean, new_clean)
 
-                        # 2) Aggiorna SUBITO lo stato locale
-                        # 2a) df in memoria
+                        # stato locale
                         mask_local = df[col_name].map(norm_key) == norm_key(old_clean)
                         df.loc[mask_local, col_name] = new_clean
-                        st.session_state["df"] = df  # riassegna per sicurezza
+                        st.session_state["df"] = df
 
-                        # 2b) cache opzioni uniche per quel campo (sostituisci old->new e dedup)
                         opts = st.session_state["unique_options_by_field"].get(col_name, [])
                         opts = [new_clean if norm_key(o) == norm_key(old_clean) else o for o in opts]
                         if all(norm_key(new_clean) != norm_key(o) for o in opts):
@@ -603,14 +629,12 @@ with right:
                                 dedup[k] = o
                         st.session_state["unique_options_by_field"][col_name] = sorted(dedup.values(), key=lambda x: x.lower())
 
-                        # 2c) aggiorna le mappe e i widget della riga corrente
                         st.session_state["pending_by_field"][col_name][current_art_kart]  = new_clean
                         st.session_state["selected_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state["effective_by_field"][col_name][current_art_kart] = new_clean
                         ui_key = f"select_{col_name}_{current_art_kart}"
                         st.session_state[ui_key] = new_clean
 
-                        # 3) Piccolo rerun per ridisegnare i dropdown senza perdere il contesto
                         st.toast(f"✅ Rinomina completata: {changed} occorrenze aggiornate. UI aggiornata.", icon="✅")
                         st.rerun()
 
@@ -643,7 +667,7 @@ with right:
                     ui_key = f"select_{col_name}_{current_art_kart}"
                     st.session_state[ui_key] = cand
                     st.toast(f"✅ Creato nuovo valore per {col_name}: {cand}")
-                    st.rerun()  # piccolo rerun per aggiornare subito il dropdown
+                    st.rerun()
             with c2:
                 st.button("❌ Annulla")
 
@@ -658,7 +682,6 @@ with right:
             effective_map= st.session_state["effective_by_field"][col_name]
             unique_opts  = st.session_state["unique_options_by_field"].get(col_name, [])
 
-            # Valore di default mostrato nel select (senza toccare session_state durante il render)
             default_value = (
                 effective_map.get(current_art_kart)
                 or selected_map.get(current_art_kart)
@@ -666,12 +689,10 @@ with right:
                 or current_val
             )
 
-            # Opzioni: tieni tutte le uniche + assicurati che il default sia presente
             options = [""] + unique_opts
             if default_value and all(norm_key(default_value) != norm_key(v) for v in options):
                 options.append(default_value)
 
-            # Calcola l'indice del default
             def_idx = next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(default_value or "")), 0)
 
             col_label, col_select, col_edit, col_add = st.columns([0.22, 0.58, 0.10, 0.10])
@@ -686,7 +707,6 @@ with right:
                 )
                 val = normalize_spaces(val)
 
-                # Persisti davvero la scelta dell’utente
                 selected_map[current_art_kart]  = val
                 effective_map[current_art_kart] = val
                 pending_map[current_art_kart]   = val
