@@ -1,6 +1,7 @@
 # app.py – dettaglio riga più largo, label a sinistra del dropdown, layout super-compatto
 import json
 import re
+import html
 from urllib.parse import urlparse, parse_qs
 from difflib import SequenceMatcher
 
@@ -108,6 +109,45 @@ def str_similarity(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
     return SequenceMatcher(None, a, b).ratio()
+
+# --- Diff utilities (word-level, preservando spazi) ---
+_token_re = re.compile(r"\s+|[^\s]+", re.UNICODE)
+
+def _tokenize_keep_spaces(s: str):
+    return _token_re.findall(s or "")
+
+def diff_old_new_html(old: str, new: str) -> tuple[str, str]:
+    """
+    Ritorna (old_html, new_html) con differenze evidenziate:
+      - old_html: parti rimosse marcate .diff-del
+      - new_html: parti aggiunte marcate .diff-ins
+    """
+    a = _tokenize_keep_spaces(to_clean_str(old))
+    b = _tokenize_keep_spaces(to_clean_str(new))
+    sm = SequenceMatcher(a=a, b=b, autojunk=False)
+
+    old_out = []
+    new_out = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            old_out.append("".join(html.escape(t) for t in a[i1:i2]))
+            new_out.append("".join(html.escape(t) for t in b[j1:j2]))
+        elif tag == "delete":
+            seg = "".join(html.escape(t) for t in a[i1:i2])
+            if seg:
+                old_out.append(f"<span class='diff-del'>{seg}</span>")
+        elif tag == "insert":
+            seg = "".join(html.escape(t) for t in b[j1:j2])
+            if seg:
+                new_out.append(f"<span class='diff-ins'>{seg}</span>")
+        elif tag == "replace":
+            seg_old = "".join(html.escape(t) for t in a[i1:i2])
+            seg_new = "".join(html.escape(t) for t in b[j1:j2])
+            if seg_old:
+                old_out.append(f"<span class='diff-del'>{seg_old}</span>")
+            if seg_new:
+                new_out.append(f"<span class='diff-ins'>{seg_new}</span>")
+    return "".join(old_out), "".join(new_out)
 
 # =========================================
 # OAUTH
@@ -451,7 +491,7 @@ with left:
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
 with right:
-    # CSS ultra-compatto: etichette a sinistra, controlli bassi, margini ridotti
+    # CSS ultra-compatto + stili diff
     st.markdown(
         """
         <style>
@@ -460,6 +500,12 @@ with right:
           div[data-baseweb="select"] > div { min-height: 34px; }
           .stButton button { padding: 0.26rem 0.44rem; min-height: 34px; border-radius: 8px; }
           .stCaption, .stMarkdown p { margin-bottom: 6px !important; }
+          .diff-box { background:#fafbfc; border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; margin-top:8px;}
+          .diff-title { font-size:0.85rem; color:#555; margin-bottom:6px;}
+          .diff-line { font-size:0.9rem; }
+          .diff-label { color:#666; font-weight:600; margin-right:6px; }
+          .diff-ins { background:#d9fbe5; text-decoration: underline; }
+          .diff-del { background:#fde2e1; text-decoration: line-through; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -480,9 +526,11 @@ with right:
 
         current_art_kart = to_clean_str(full_row.get("art_kart", ""))
         current_art_desart = to_clean_str(full_row.get("art_desart", ""))
+        current_prev_desart = to_clean_str(full_row.get("art_desart_precedente", ""))
         current_qxc = to_clean_str(full_row.get("QxC", ""))
+        current_mod_flag = to_clean_str(full_row.get("Mod?", "")).upper()
 
-        # ======= FUNZIONE per leggere il valore "corrente" dei campi (UI > mappe > df) =======
+        # ======= FUNZIONE: valore "corrente" (UI > mappe > df) =======
         def get_current_value(field: str) -> str:
             eff_all = st.session_state["effective_by_field"].get(field, {})
             sel_all = st.session_state["selected_by_field"].get(field, {})
@@ -511,7 +559,7 @@ with right:
         header_html += "</div>"
         st.markdown(header_html, unsafe_allow_html=True)
 
-        # ======= RIGA SOTTO: concatenazione dinamica =======
+        # ======= CONCAT DINAMICA SOTTO =======
         azienda = get_current_value("Azienda")
         prodotto = get_current_value("Prodotto")
         grad = get_current_value("gradazione")
@@ -530,7 +578,19 @@ with right:
 
         concat_line = " ".join(parts).strip()
         if concat_line:
-            st.markdown(f"<div style='color:#444;font-size:0.9rem;margin-top:4px;'>{concat_line}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='color:#444;font-size:0.9rem;margin-top:4px;'>{html.escape(concat_line)}</div>", unsafe_allow_html=True)
+
+        # ======= DIFF visivo se Mod? = SI =======
+        if current_mod_flag == "SI" and (current_prev_desart or current_art_desart):
+            old_html, new_html = diff_old_new_html(current_prev_desart, current_art_desart)
+            diff_block = f"""
+            <div class="diff-box">
+              <div class="diff-title">Differenze descrizione (solo se Mod?=SI)</div>
+              <div class="diff-line"><span class="diff-label">Precedente:</span>{old_html}</div>
+              <div class="diff-line"><span class="diff-label">Attuale:</span>{new_html}</div>
+            </div>
+            """
+            st.markdown(diff_block, unsafe_allow_html=True)
 
         # ======= SUGGERIMENTI SIMILI =======
         try:
