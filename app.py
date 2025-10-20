@@ -887,7 +887,6 @@ with right:
 # <<< END BLOCK: DETTAGLIO – STATO SALVATAGGIO ---------------------------------
 
 
-
 # >>> BLOCK: DETTAGLIO – SALVA SU GOOGLE SHEETS --------------------------------
         just_saved = (
             st.session_state["save_state_by_art"].get(current_art_kart, {}).get("just_saved", False)
@@ -930,4 +929,50 @@ with right:
                         for field in SELECT_FIELDS:
                             a1 = rowcol_to_a1(row_number, col_map[field])
                             current_sheet_val = ws.acell(a1).value or ""
-                            if normali
+                            if normalize_spaces(current_sheet_val) != normalize_spaces(values_map[field]):
+                                to_force.append((a1, values_map[field]))
+                        for a1, v in to_force:
+                            ws.update(a1, [[v]], value_input_option="USER_ENTERED")
+                        if to_force:
+                            st.info(f"🔧 Aggiornate {len(to_force)} celle con i valori selezionati.")
+                    else:
+                        st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
+
+                    # aggiorna effective + df locale
+                    for field in SELECT_FIELDS:
+                        st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
+                    mask_row = df["art_kart"].map(to_clean_str) == art_val
+                    if mask_row.any():
+                        for field in SELECT_FIELDS:
+                            df.loc[mask_row, field] = normalize_spaces(values_map[field])
+                        for c in other_cols:
+                            df.loc[mask_row, c] = normalize_spaces(values_map.get(c, ""))
+                        st.session_state["df"] = df
+
+                    # snapshot per il badge
+                    snapshot_new = {}
+                    for f in SELECT_FIELDS:
+                        snapshot_new[f] = normalize_spaces(values_map[f])
+                    for c in other_cols:
+                        snapshot_new[c] = normalize_spaces(values_map.get(c, ""))
+                    st.session_state["last_saved_by_art"][current_art_kart] = snapshot_new
+                    st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": True}
+
+                    if result == "updated":
+                        st.success(f"✅ Riga {art_val} aggiornata.")
+                    elif result == "added":
+                        st.success(f"✅ Nuova riga {art_val} aggiunta.")
+                    st.toast("Salvato!", icon="✅")
+
+                except Exception as e:
+                    st.error("❌ Errore durante il salvataggio:")
+                    st.exception(e)
+
+        # Mostra il badge alla destra del bottone (sempre)
+        with col_badge:
+            st.markdown(
+                f"<div style='display:flex;align-items:center;height:38px;'>{badge_html}</div>",
+                unsafe_allow_html=True,
+            )
+# <<< END BLOCK: DETTAGLIO – SALVA ---------------------------------------------
+
