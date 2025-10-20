@@ -546,12 +546,11 @@ with right:
                             st.session_state[ui_key] = v
 
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
-
         except Exception:
             pass
 
         # =========================
-        # Dialog: RINOMINA GLOBALE (senza rerun, senza salvataggi extra)
+        # Dialog: RINOMINA GLOBALE (con rerun mirato per aggiornare UI)
         # =========================
         @st.dialog("Rinomina valore globale")
         def dialog_rinomina_generica(col_name: str, old_val: str):
@@ -586,7 +585,7 @@ with right:
 
                         changed = batch_find_replace_generic(ws, col_name, old_clean, new_clean)
 
-                        # 2) Aggiorna SUBITO lo stato locale (senza rerun)
+                        # 2) Aggiorna SUBITO lo stato locale
                         # 2a) df in memoria
                         mask_local = df[col_name].map(norm_key) == norm_key(old_clean)
                         df.loc[mask_local, col_name] = new_clean
@@ -595,10 +594,8 @@ with right:
                         # 2b) cache opzioni uniche per quel campo (sostituisci old->new e dedup)
                         opts = st.session_state["unique_options_by_field"].get(col_name, [])
                         opts = [new_clean if norm_key(o) == norm_key(old_clean) else o for o in opts]
-                        # se nuovo non presente, aggiungilo
                         if all(norm_key(new_clean) != norm_key(o) for o in opts):
                             opts.append(new_clean)
-                        # rimuovi duplicati case-insensitive preservando il primo
                         dedup = {}
                         for o in opts:
                             k = norm_key(o)
@@ -606,22 +603,22 @@ with right:
                                 dedup[k] = o
                         st.session_state["unique_options_by_field"][col_name] = sorted(dedup.values(), key=lambda x: x.lower())
 
-                        # 2c) aggiorna le mappe e il widget della riga corrente
+                        # 2c) aggiorna le mappe e i widget della riga corrente
                         st.session_state["pending_by_field"][col_name][current_art_kart]  = new_clean
                         st.session_state["selected_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state["effective_by_field"][col_name][current_art_kart] = new_clean
                         ui_key = f"select_{col_name}_{current_art_kart}"
                         st.session_state[ui_key] = new_clean
 
-                        st.success(f"✅ Rinomina completata: {changed} occorrenze aggiornate nel foglio.")
-                        st.toast("Valore rinominato globalmente. Puoi continuare ad editare.", icon="✅")
+                        # 3) Piccolo rerun per ridisegnare i dropdown senza perdere il contesto
+                        st.toast(f"✅ Rinomina completata: {changed} occorrenze aggiornate. UI aggiornata.", icon="✅")
+                        st.rerun()
 
                     except Exception as e:
                         st.error("❌ Errore durante la rinomina globale:")
                         st.exception(e)
 
             with c2:
-                # Nessun rerun: l'utente può chiudere il dialog e continuare a lavorare
                 st.button("❌ Annulla")
 
         # =========================
@@ -643,10 +640,10 @@ with right:
                     st.session_state["pending_by_field"][col_name][current_art_kart] = cand
                     st.session_state["selected_by_field"][col_name][current_art_kart] = cand
                     st.session_state["effective_by_field"][col_name][current_art_kart] = cand
-                    # aggiorna subito il widget
                     ui_key = f"select_{col_name}_{current_art_kart}"
                     st.session_state[ui_key] = cand
                     st.toast(f"✅ Creato nuovo valore per {col_name}: {cand}")
+                    st.rerun()  # piccolo rerun per aggiornare subito il dropdown
             with c2:
                 st.button("❌ Annulla")
 
@@ -802,10 +799,7 @@ with right:
                 else:
                     st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
 
-                # aggiorna stato locale minimo senza rerun completo
-                # (qui non tocchiamo cache_data globale)
-                # ricarico df in cache solo locale per coerenza visiva se servisse
-                # ma per evitare rerun, aggiorniamo direttamente la riga corrente
+                # stato locale: segna gli effective correnti
                 for field in SELECT_FIELDS:
                     st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
 
