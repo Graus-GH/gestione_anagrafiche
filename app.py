@@ -217,25 +217,31 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     ws = next((w for w in sh.worksheets() if str(w.id) == str(gid)), None)
     if ws is None:
         raise RuntimeError(f"Nessun worksheet con gid={gid}.")
-tmp = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0)
-if tmp is None:
-    df = pd.DataFrame()
-elif isinstance(tmp, pd.DataFrame):
-    df = tmp
-else:
-    df = pd.DataFrame(tmp)
+
+    # ⚠️ NIENTE "or pd.DataFrame()" qui: gestiamo esplicitamente
+    tmp = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0)
+    if tmp is None:
+        df = pd.DataFrame()
+    elif isinstance(tmp, pd.DataFrame):
+        df = tmp
+    else:
+        df = pd.DataFrame(tmp)
 
     df = df.dropna(how="all")
+
     for col in df.columns:
         df[col] = df[col].map(to_clean_str)
+
     for c in set(RESULT_COLS + WRITE_COLS):
         if c not in df.columns:
             df[c] = ""
         else:
             df[c] = df[c].map(to_clean_str)
+
     df["art_kart"] = df["art_kart"].map(to_clean_str)
     return df
 # <<< END BLOCK: DATA LOAD ------------------------------------------------------
+
 
 
 # >>> BLOCK: DATA WRITE (UTILITY SCRITTURA) ------------------------------------
