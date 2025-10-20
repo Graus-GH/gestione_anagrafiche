@@ -217,9 +217,14 @@ def load_df(creds_json: dict, sheet_url: str) -> pd.DataFrame:
     ws = next((w for w in sh.worksheets() if str(w.id) == str(gid)), None)
     if ws is None:
         raise RuntimeError(f"Nessun worksheet con gid={gid}.")
-    df = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0) or pd.DataFrame()
-    if not isinstance(df, pd.DataFrame):
-        df = pd.DataFrame(df)
+tmp = get_as_dataframe(ws, evaluate_formulas=True, include_index=False, header=0)
+if tmp is None:
+    df = pd.DataFrame()
+elif isinstance(tmp, pd.DataFrame):
+    df = tmp
+else:
+    df = pd.DataFrame(tmp)
+
     df = df.dropna(how="all")
     for col in df.columns:
         df[col] = df[col].map(to_clean_str)
@@ -395,6 +400,15 @@ def ensure_field_maps():
     if "effective_by_field" not in st.session_state:
         st.session_state["effective_by_field"] = {f:{} for f in SELECT_FIELDS}
 ensure_field_maps()
+
+def reset_local_state(keep_auth: bool = True):
+    """Rimuove tutte le chiavi da st.session_state tranne oauth_token (se keep_auth=True)."""
+    keep_keys = {"oauth_token"} if keep_auth else set()
+    for k in list(st.session_state.keys()):
+        if k not in keep_keys:
+            del st.session_state[k]
+
+
 # <<< END BLOCK: STATO APP E CACHE OPZIONI -------------------------------------
 
 
@@ -407,19 +421,47 @@ f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti, key="f_reps")
 pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0, key="f_pres")
 f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero", key="f_aff")
 
-# 🔄 Pulsante ricarica dal database
+# 🔄 Pulsante ricarica dal database (reset completo stato locale, salvo OAuth)
 if st.sidebar.button("🔄 Aggiorna dal database"):
     try:
+        # conserva il token OAuth
+        oauth_backup = st.session_state.get("oauth_token")
+
+        # svuota cache dati e stato locale
         st.cache_data.clear()
-        st.session_state["df"] = load_df(json.loads(creds.to_json()), SOURCE_URL)
+        reset_local_state(keep_auth=True)
+
+        # ripristina oauth e ricarica df fresco
+        if oauth_backup is not None:
+            st.session_state["oauth_token"] = oauth_backup
+        creds_json = json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json())
+
+        st.session_state["df"] = load_df(creds_json, SOURCE_URL)
         df = st.session_state["df"]
+
+        # re-init strutture derivate
+        st.session_state["data_version"] = 0
+        st.session_state["unique_options_by_field"] = {}
         for f in SELECT_FIELDS:
             refresh_unique_cache(f)
-        st.session_state["data_version"] += 1
+
+        # re-init mappe select
+        def ensure_field_maps():
+            if "pending_by_field" not in st.session_state:
+                st.session_state["pending_by_field"] = {f:{} for f in SELECT_FIELDS}
+            if "selected_by_field" not in st.session_state:
+                st.session_state["selected_by_field"] = {f:{} for f in SELECT_FIELDS}
+            if "effective_by_field" not in st.session_state:
+                st.session_state["effective_by_field"] = {f:{} for f in SELECT_FIELDS}
+        ensure_field_maps()
+
         st.toast("Dati aggiornati dall'origine ✅")
+        st.rerun()
+
     except Exception as e:
         st.sidebar.error("Errore ricaricando i dati:")
         st.sidebar.exception(e)
+
 
 # Nuovo filtro: Solo Mod? = SI
 only_mod_si = st.sidebar.checkbox('Solo Mod? = "SI"', value=False)
