@@ -491,7 +491,7 @@ with left:
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
 with right:
-    # CSS ultra-compatto + stili diff
+    # CSS ultra-compatto + stili diff + stato
     st.markdown(
         """
         <style>
@@ -506,6 +506,12 @@ with right:
           .diff-label { color:#666; font-weight:600; margin-right:6px; }
           .diff-ins { background:#d9fbe5; text-decoration: underline; }
           .diff-del { background:#fde2e1; text-decoration: line-through; }
+          .status-pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:0.82rem; border:1px solid; margin-left:auto; }
+          .status-ok  { background:#e6ffed; color:#046a38; border-color:#b7f0c0; }
+          .status-dirty{ background:#fff4e5; color:#8a3b00; border-color:#ffd8a8; }
+          .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+          .dot-ok { background:#1f8a4c; }
+          .dot-dirty { background:#e86f00; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -544,19 +550,30 @@ with right:
                 or full_row.get(field, "")
             )
 
-        # ======= TESTATA (titolo + pill sulla stessa riga) =======
+        # ======= TESTATA (titolo + pill + STATO sulla stessa riga) =======
         pill_style = (
             "display:inline-block;background:#eef0f3;border:1px solid #d5d8dc;border-radius:8px;"
             "padding:2px 8px;margin-left:6px;font-size:0.86rem;line-height:1.2;"
         )
-        header_html = "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:6px;'>"
+
+        # Header container avrà anche lo spazio per lo status-pill a destra
+        header_left = ""
         if current_art_desart:
-            header_html += f"<span style='font-size:0.98rem;font-weight:600;line-height:1.25;'>{current_art_desart}</span>"
+            header_left += f"<span style='font-size:0.98rem;font-weight:600;line-height:1.25;'>{current_art_desart}</span>"
         if current_art_kart:
-            header_html += f"<span style='{pill_style}'>#{current_art_kart}</span>"
+            header_left += f"<span style='{pill_style}'>#{current_art_kart}</span>"
         if current_qxc:
-            header_html += f"<span style='{pill_style}'>{current_qxc}</span>"
-        header_html += "</div>"
+            header_left += f"<span style='{pill_style}'>{current_qxc}</span>"
+
+        # La status pill la comporremo dopo aver calcolato 'dirty'
+        status_html = ""  # placeholder
+
+        header_html = f"""
+        <div style='display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;'>
+          <div style='display:flex;align-items:center;gap:6px;flex-wrap:wrap;'>{header_left}</div>
+          <div id="status-pill-slot">{status_html}</div>
+        </div>
+        """
         st.markdown(header_html, unsafe_allow_html=True)
 
         # ======= CONCAT DINAMICA SOTTO =======
@@ -592,7 +609,9 @@ with right:
             """
             st.markdown(diff_block, unsafe_allow_html=True)
 
-        # ======= SUGGERIMENTI SIMILI =======
+        # =========================
+        # SUGGERIMENTI SIMILI
+        # =========================
         try:
             base = df[df["art_kart"].map(to_clean_str) != current_art_kart].copy()
             base["__sim_current__"] = base["art_desart"].apply(lambda s: str_similarity(s, current_art_desart))
@@ -641,7 +660,7 @@ with right:
             pass
 
         # =========================
-        # Dialog: RINOMINA GLOBALE (con rerun mirato per aggiornare UI)
+        # Dialog: RINOMINA GLOBALE (con rerun per aggiornare UI)
         # =========================
         @st.dialog("Rinomina valore globale")
         def dialog_rinomina_generica(col_name: str, old_val: str):
@@ -821,30 +840,58 @@ with right:
         )
 
         # =========================
+        # STATO SALVATO / NON SALVATO (calcolo differenze sui campi visibili)
+        # =========================
+        # valori correnti (UI) per i select
+        current_select_values = {f: get_current_value(f) for f in SELECT_FIELDS}
+        # valori correnti (UI) per gli altri campi dall'editor
+        current_other_values = {}
+        try:
+            for _, r in edited_detail.iterrows():
+                campo = to_clean_str(r.get("Campo", ""))
+                if campo in other_cols:
+                    current_other_values[campo] = normalize_spaces(to_clean_str(r.get("Valore", "")))
+        except Exception:
+            # fallback ai valori originali se qualcosa non torna
+            current_other_values = {c: normalize_spaces(to_clean_str(full_row.get(c, ""))) for c in other_cols}
+
+        # origine (df) per confronto
+        origin_select_values = {f: normalize_spaces(to_clean_str(full_row.get(f, ""))) for f in SELECT_FIELDS}
+        origin_other_values  = {c: normalize_spaces(to_clean_str(full_row.get(c, ""))) for c in other_cols}
+
+        dirty_fields = []
+        for f in SELECT_FIELDS:
+            if norm_key(current_select_values.get(f, "")) != norm_key(origin_select_values.get(f, "")):
+                dirty_fields.append(f)
+        for c in other_cols:
+            if norm_key(current_other_values.get(c, "")) != norm_key(origin_other_values.get(c, "")):
+                dirty_fields.append(c)
+
+        is_dirty = len(dirty_fields) > 0
+        if is_dirty:
+            status_pill = f"<span class='status-pill status-dirty' title='Campi modificati: {', '.join(dirty_fields)}'><span class='dot dot-dirty'></span> Modifiche non salvate</span>"
+        else:
+            status_pill = "<span class='status-pill status-ok' title='I dati visibili coincidono con l’origine'><span class='dot dot-ok'></span> Dati salvati</span>"
+
+        # Inserisci la pill nello slot (ridisegno subito sotto)
+        st.markdown(f"<div style='display:flex;justify-content:flex-end;'>{status_pill}</div>", unsafe_allow_html=True)
+
+        # =========================
         # SALVA
         # =========================
         if st.button("💾 Salva nell'origine"):
             try:
+                # prepara values_map partendo dai valori correnti UI
                 values_map = {}
+                # from data editor
                 for _, r in edited_detail.iterrows():
                     campo = to_clean_str(r.get("Campo", ""))
                     if campo and campo in other_cols:
                         values_map[campo] = to_clean_str(r.get("Valore", ""))
 
-                eff_all = st.session_state["effective_by_field"]
-                sel_all = st.session_state["selected_by_field"]
-                pend_all = st.session_state["pending_by_field"]
-
+                # from selects
                 for field in SELECT_FIELDS:
-                    chosen = eff_all[field].get(current_art_kart)
-                    if not chosen:
-                        chosen = sel_all[field].get(current_art_kart, "")
-                    if not chosen:
-                        chosen = pend_all[field].get(current_art_kart, "")
-                    if not chosen:
-                        ui_key = f"select_{field}_{to_clean_str(current_art_kart)}"
-                        chosen = normalize_spaces(st.session_state.get(ui_key, "")) or normalize_spaces(full_row.get(field, ""))
-                    values_map[field] = normalize_spaces(chosen)
+                    values_map[field] = normalize_spaces(current_select_values.get(field, ""))
 
                 art_val = to_clean_str(full_row.get("art_kart", "")) or to_clean_str(values_map.get("art_kart", ""))
                 if not art_val:
@@ -882,6 +929,15 @@ with right:
                 # stato locale: segna gli effective correnti
                 for field in SELECT_FIELDS:
                     st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
+
+                # 🔁 AGGIORNA ANCHE IL DF LOCALE per riflettere l'origine => la pill diventa "salvato"
+                mask_row = df["art_kart"].map(to_clean_str) == art_val
+                if mask_row.any():
+                    for field in SELECT_FIELDS:
+                        df.loc[mask_row, field] = normalize_spaces(values_map[field])
+                    for c in other_cols:
+                        df.loc[mask_row, c] = normalize_spaces(values_map.get(c, ""))
+                    st.session_state["df"] = df
 
                 if "prefill_by_art_kart" in st.session_state and current_art_kart in st.session_state["prefill_by_art_kart"]:
                     st.session_state["prefill_by_art_kart"].pop(current_art_kart, None)
