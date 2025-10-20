@@ -1,4 +1,4 @@
-# app.py – dettaglio riga più largo, label a sinistra del dropdown, layout super‑compatto
+# app.py – dettaglio riga più largo, label a sinistra del dropdown, layout super-compatto
 import json
 import re
 from urllib.parse import urlparse, parse_qs
@@ -372,7 +372,6 @@ for f in SELECT_FIELDS:
         refresh_unique_cache(f)
 
 # Mappe pending/selected/effective per campo
-
 def ensure_field_maps():
     if "pending_by_field" not in st.session_state:
         st.session_state["pending_by_field"] = {f:{} for f in SELECT_FIELDS}
@@ -452,7 +451,7 @@ with left:
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
 with right:
-    # CSS ultra‑compatto: etichette a sinistra, controlli bassi, margini ridotti
+    # CSS ultra-compatto: etichette a sinistra, controlli bassi, margini ridotti
     st.markdown(
         """
         <style>
@@ -629,67 +628,66 @@ with right:
         # =========================
         # RENDER SELECT COMPACT: label a sinistra + select + ✏️ + ➕
         # =========================
-def render_select_row(col_name: str, full_row, current_art_kart: str):
-    current_val = normalize_spaces(full_row.get(col_name, ""))
+        def render_select_row(col_name: str, full_row, current_art_kart: str):
+            current_val = normalize_spaces(full_row.get(col_name, ""))
 
-    pending_map = st.session_state["pending_by_field"][col_name]
-    selected_map = st.session_state["selected_by_field"][col_name]
-    effective_map = st.session_state["effective_by_field"][col_name]
-    unique_opts  = st.session_state["unique_options_by_field"].get(col_name, [])
+            pending_map  = st.session_state["pending_by_field"][col_name]
+            selected_map = st.session_state["selected_by_field"][col_name]
+            effective_map= st.session_state["effective_by_field"][col_name]
+            unique_opts  = st.session_state["unique_options_by_field"].get(col_name, [])
 
-    # Valore di default mostrato nel select (senza toccare session_state)
-    default_value = (
-        effective_map.get(current_art_kart)
-        or selected_map.get(current_art_kart)
-        or pending_map.get(current_art_kart)
-        or current_val
-    )
+            # Valore di default mostrato nel select (senza toccare session_state)
+            default_value = (
+                effective_map.get(current_art_kart)
+                or selected_map.get(current_art_kart)
+                or pending_map.get(current_art_kart)
+                or current_val
+            )
 
-    # Opzioni: tieni tutte le uniche + assicurati che il default sia presente
-    options = [""] + unique_opts
-    if default_value and all(norm_key(default_value) != norm_key(v) for v in options):
-        options.append(default_value)
+            # Opzioni: tieni tutte le uniche + assicurati che il default sia presente
+            options = [""] + unique_opts
+            if default_value and all(norm_key(default_value) != norm_key(v) for v in options):
+                options.append(default_value)
 
-    # Calcola l'indice del default
-    def_idx = next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(default_value or "")), 0)
+            # Calcola l'indice del default
+            def_idx = next((i for i, opt in enumerate(options) if norm_key(opt) == norm_key(default_value or "")), 0)
 
-    col_label, col_select, col_edit, col_add = st.columns([0.22, 0.58, 0.10, 0.10])
-    with col_label:
-        st.markdown(f"<div class='labelcell'>{col_name}</div>", unsafe_allow_html=True)
+            col_label, col_select, col_edit, col_add = st.columns([0.22, 0.58, 0.10, 0.10])
+            with col_label:
+                st.markdown(f"<div class='labelcell'>{col_name}</div>", unsafe_allow_html=True)
 
-    select_key = f"select_{col_name}_{to_clean_str(current_art_kart)}"
-    with col_select:
-        val = st.selectbox(
-            " ", options=options, index=def_idx,
-            key=select_key, label_visibility="collapsed"
-        )
-        val = normalize_spaces(val)
+            select_key = f"select_{col_name}_{to_clean_str(current_art_kart)}"
+            with col_select:
+                val = st.selectbox(
+                    " ", options=options, index=def_idx,
+                    key=select_key, label_visibility="collapsed"
+                )
+                val = normalize_spaces(val)
 
-        # Persisti davvero la scelta dell’utente
-        selected_map[current_art_kart] = val
-        effective_map[current_art_kart] = val
-        pending_map[current_art_kart]  = val
+                # Persisti davvero la scelta dell’utente
+                selected_map[current_art_kart]  = val
+                effective_map[current_art_kart] = val
+                pending_map[current_art_kart]   = val
 
-    with col_edit:
-        edit_disabled = not bool(val)
-        if st.button(
-            "✏️",
-            help=f"Rinomina globalmente il valore selezionato in «{col_name}»",
-            disabled=edit_disabled,
-            key=f"btn_edit_{col_name}_{current_art_kart}"
-        ):
-            dialog_rinomina_generica(col_name, val)
+            with col_edit:
+                edit_disabled = not bool(val)
+                if st.button(
+                    "✏️",
+                    help=f"Rinomina globalmente il valore selezionato in «{col_name}»",
+                    disabled=edit_disabled,
+                    key=f"btn_edit_{col_name}_{current_art_kart}"
+                ):
+                    dialog_rinomina_generica(col_name, val)
 
-    with col_add:
-        if st.button(
-            "➕",
-            help=f"Crea un nuovo valore per {col_name}",
-            key=f"btn_add_{col_name}_{current_art_kart}"
-        ):
-            dialog_crea_generica(col_name, val)
+            with col_add:
+                if st.button(
+                    "➕",
+                    help=f"Crea un nuovo valore per {col_name}",
+                    key=f"btn_add_{col_name}_{current_art_kart}"
+                ):
+                    dialog_crea_generica(col_name, val)
 
-
-        # render tutti i campi in pila super‑compatta
+        # render tutti i campi in pila super-compatta
         for col_name in SELECT_FIELDS:
             with st.container():
                 render_select_row(col_name, full_row, current_art_kart)
