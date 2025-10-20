@@ -256,7 +256,7 @@ def find_row_number_by_art_kart_ws(ws: gspread.Worksheet, col_map: dict, art_kar
     if not col_idx:
         return None
     art_val = to_clean_str(art_kart)
-    col_vals = ws.col_values(col_idx)  # include header
+    col_vals = ws.col_values(col_idx)
     for i, v in enumerate(col_vals[1:], start=2):
         if to_clean_str(v) == art_val:
             return i
@@ -362,9 +362,10 @@ if "df" not in st.session_state:
         st.stop()
 df = st.session_state["df"]
 
-# Stato per bottone “salvato”
-if "save_state_by_art" not in st.session_state:
-    st.session_state["save_state_by_art"] = {}  # {art_kart: {"just_saved": bool}}
+# Stato per bottone/snapshot
+st.session_state.setdefault("save_state_by_art", {})     # {art_kart: {"just_saved": bool}}
+st.session_state.setdefault("last_saved_by_art", {})     # {art_kart: {field: value}}
+st.session_state.setdefault("current_art_kart", None)
 
 # Cache opzioni uniche per tutti i campi SELECT_FIELDS
 if "unique_options_by_field" not in st.session_state:
@@ -399,7 +400,6 @@ reparti = sorted([v for v in df.get("art_kmacro", pd.Series([], dtype=object)).d
 f_reps = st.sidebar.multiselect("art_kmacro (reparto)", reparti, key="f_reps")
 pres = st.sidebar.radio("DescrizioneAffinata", ["Qualsiasi", "Presente", "Assente"], index=0, key="f_pres")
 f_aff = st.sidebar.text_input("Cerca in DescrizioneAffinata", placeholder="testo libero", key="f_aff")
-
 # 🔄 Pulsante ricarica dal database
 if st.sidebar.button("🔄 Aggiorna dal database"):
     try:
@@ -414,6 +414,9 @@ if st.sidebar.button("🔄 Aggiorna dal database"):
         st.sidebar.error("Errore ricaricando i dati:")
         st.sidebar.exception(e)
 
+# Nuovo filtro: Solo Mod? = SI
+only_mod_si = st.sidebar.checkbox('Solo Mod? = "SI"', value=False)
+
 mask = pd.Series(True, index=df.index)
 if f_code.strip():
     mask &= df["art_kart"].str.contains(re.escape(f_code.strip()), case=False, na=False)
@@ -427,13 +430,15 @@ elif pres == "Assente":
     mask &= df["DescrizioneAffinata"].str.strip() == ""
 if f_aff.strip():
     mask &= df["DescrizioneAffinata"].str.contains(re.escape(f_aff.strip()), case=False, na=False)
+if only_mod_si and "Mod?" in df.columns:
+    mask &= df["Mod?"].map(lambda x: to_clean_str(x).upper() == "SI")
 
 filtered = df.loc[mask].copy()
 
 # =========================================
 # MAIN: SX risultati, DX dettaglio (DX più largo)
 # =========================================
-left, right = st.columns([1, 1.6], gap="large")  # dettaglio riga allargato
+left, right = st.columns([1, 1.6], gap="large")
 
 with left:
     present_cols = [c for c in RESULT_COLS if c in filtered.columns]
@@ -473,7 +478,7 @@ with left:
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
 
 with right:
-    # CSS ultra-compatto + stili diff + stato
+    # CSS
     st.markdown(
         """
         <style>
@@ -488,7 +493,7 @@ with right:
           .diff-label { color:#666; font-weight:600; margin-right:6px; }
           .diff-ins { background:#d9fbe5; text-decoration: underline; }
           .diff-del { background:#fde2e1; text-decoration: line-through; }
-          .status-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-size:0.84rem; border:1px solid; }
+          .status-pill { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; font-size:0.84rem; border:1px solid; }
           .status-ok  { background:#e6ffed; color:#046a38; border-color:#b7f0c0; }
           .status-dirty{ background:#fff4e5; color:#8a3b00; border-color:#ffd8a8; }
           .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
@@ -518,8 +523,18 @@ with right:
         current_qxc = to_clean_str(full_row.get("QxC", ""))
         current_mod_flag = to_clean_str(full_row.get("Mod?", "")).upper()
 
-        # slot stato ALTO
-        status_slot = st.empty()
+        # Se cambio riga selezionata, inizializza snapshot a valori origine
+        if st.session_state["current_art_kart"] != current_art_kart:
+            base_snapshot = {}
+            for f in SELECT_FIELDS:
+                base_snapshot[f] = normalize_spaces(to_clean_str(full_row.get(f, "")))
+            for c in [c for c in WRITE_COLS if c not in SELECT_FIELDS]:
+                base_snapshot[c] = normalize_spaces(to_clean_str(full_row.get(c, "")))
+            st.session_state["last_saved_by_art"][current_art_kart] = base_snapshot
+            st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": False}
+            st.session_state["current_art_kart"] = current_art_kart
+
+        status_slot = st.empty()  # badge in alto
 
         # ======= helper per valori correnti UI
         def get_current_value(field: str) -> str:
@@ -611,10 +626,8 @@ with right:
                 ):
                     sel_row = cand.iloc[sel_idx].to_dict()
                     prefill = {f: to_clean_str(sel_row.get(f, "")) for f in COPY_FIELDS}
-
                     st.session_state.setdefault("prefill_by_art_kart", {})
                     st.session_state["prefill_by_art_kart"][current_art_kart] = prefill
-
                     for field in SELECT_FIELDS:
                         v = normalize_spaces(prefill.get(field, ""))
                         if v:
@@ -622,22 +635,34 @@ with right:
                             st.session_state["selected_by_field"][field][current_art_kart] = v
                             st.session_state["effective_by_field"][field][current_art_kart] = v
                             st.session_state[f"select_{field}_{current_art_kart}"] = v
-                    # appena modifichi qualcosa, marca non salvato
                     st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": False}
                     st.toast("Campi copiati nell'editor. Ricorda di salvare per scrivere sul foglio.", icon="ℹ️")
         except Exception:
             pass
 
         # =========================
-        # Dialog: RINOMINA GLOBALE (con rerun per aggiornare UI)
+        # Dialog: RINOMINA GLOBALE (con elenco righe interessate)
         # =========================
         @st.dialog("Rinomina valore globale")
         def dialog_rinomina_generica(col_name: str, old_val: str):
             st.write(f"Colonna: **{col_name}**")
             st.write(f"Valore corrente: **{old_val}**")
             new_val = st.text_input("Nuovo nome", value="", placeholder=f"Nuovo valore per «{col_name}»…")
-            X = int((df.get(col_name, pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val)).sum())
+
+            # Calcolo righe coinvolte + elenco DescrizioneAffinata
+            mask_aff = (df.get(col_name, pd.Series([], dtype=object)).map(norm_key) == norm_key(old_val))
+            affected = df.loc[mask_aff, ["art_kart", "DescrizioneAffinata"]].copy() if "DescrizioneAffinata" in df.columns else df.loc[mask_aff, ["art_kart"]].copy()
+            X = int(mask_aff.sum())
             st.warning(f"⚠️ Modificherai **{X}** righe nel foglio. Confermi?")
+            with st.expander("Vedi elenco descrizioni interessate", expanded=False):
+                if affected.empty:
+                    st.write("Nessuna riga.")
+                else:
+                    show = affected.head(50)
+                    st.dataframe(show, use_container_width=True, hide_index=True)
+                    if len(affected) > len(show):
+                        st.caption(f"… e altre {len(affected)-len(show)} righe")
+
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("✅ Conferma rinomina", disabled=(normalize_spaces(new_val) == "")):
@@ -651,6 +676,7 @@ with right:
                             if norm_key(v) == norm_key(new_clean):
                                 new_clean = v; break
                         changed = batch_find_replace_generic(ws, col_name, old_clean, new_clean)
+
                         # stato locale
                         mask_local = df[col_name].map(norm_key) == norm_key(old_clean)
                         df.loc[mask_local, col_name] = new_clean
@@ -658,15 +684,16 @@ with right:
                         opts = st.session_state["unique_options_by_field"].get(col_name, [])
                         opts = [new_clean if norm_key(o) == norm_key(old_clean) else o for o in opts]
                         if all(norm_key(new_clean) != norm_key(o) for o in opts): opts.append(new_clean)
-                        dedup = {norm_key(o): o for o in opts}
-                        st.session_state["unique_options_by_field"][col_name] = sorted(dedup.values(), key=lambda x: x.lower())
+                        st.session_state["unique_options_by_field"][col_name] = sorted({norm_key(o): o for o in opts}.values(), key=lambda x: x.lower())
+
                         st.session_state["pending_by_field"][col_name][current_art_kart]  = new_clean
                         st.session_state["selected_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state["effective_by_field"][col_name][current_art_kart] = new_clean
                         st.session_state[f"select_{col_name}_{current_art_kart}"] = new_clean
-                        # rinomina non salva l'intera riga ⇒ mostra non salvato
+
+                        # rinomina non salva la riga ⇒ resta dirty
                         st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": False}
-                        st.toast(f"✅ Rinomina completata: {changed} occorrenze aggiornate. UI aggiornata.", icon="✅")
+                        st.toast(f"✅ Rinomina completata: {changed} occorrenze aggiornate.", icon="✅")
                         st.rerun()
                     except Exception as e:
                         st.error("❌ Errore durante la rinomina globale:")
@@ -726,7 +753,6 @@ with right:
             with col_select:
                 val = st.selectbox(" ", options=options, index=def_idx, key=select_key, label_visibility="collapsed")
                 val = normalize_spaces(val)
-                # Persisti scelta + marca non salvato
                 selected_map[current_art_kart]  = val
                 effective_map[current_art_kart] = val
                 pending_map[current_art_kart]   = val
@@ -766,8 +792,9 @@ with right:
         )
 
         # =========================
-        # STATO SALVATO / NON SALVATO (calcolo e render IN ALTO)
+        # STATO SALVATO / NON SALVATO (snapshot)
         # =========================
+        # valori correnti UI
         current_select_values = {f: get_current_value(f) for f in SELECT_FIELDS}
         current_other_values = {}
         try:
@@ -777,35 +804,29 @@ with right:
                     current_other_values[campo] = normalize_spaces(to_clean_str(r.get("Valore", "")))
         except Exception:
             current_other_values = {c: normalize_spaces(to_clean_str(full_row.get(c, ""))) for c in other_cols}
-        origin_select_values = {f: normalize_spaces(to_clean_str(full_row.get(f, ""))) for f in SELECT_FIELDS}
-        origin_other_values  = {c: normalize_spaces(to_clean_str(full_row.get(c, ""))) for c in other_cols}
 
+        # snapshot ultimo salvataggio
+        snapshot = st.session_state["last_saved_by_art"].get(current_art_kart, {})
         dirty_fields = []
         for f in SELECT_FIELDS:
-            if norm_key(current_select_values.get(f, "")) != norm_key(origin_select_values.get(f, "")):
+            if norm_key(current_select_values.get(f, "")) != norm_key(snapshot.get(f, normalize_spaces(to_clean_str(full_row.get(f, ""))))):
                 dirty_fields.append(f)
         for c in other_cols:
-            if norm_key(current_other_values.get(c, "")) != norm_key(origin_other_values.get(c, "")):
+            if norm_key(current_other_values.get(c, "")) != norm_key(snapshot.get(c, normalize_spaces(to_clean_str(full_row.get(c, ""))))):
                 dirty_fields.append(c)
         is_dirty = len(dirty_fields) > 0
 
-        # Se non dirty ma non hai mai salvato, mostra "salvato"; se dirty forza non salvato
         if is_dirty:
             st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": False}
-        just_saved = st.session_state["save_state_by_art"].get(current_art_kart, {}).get("just_saved", False) and not is_dirty
-
-        if just_saved:
-            status_pill = "<span class='status-pill status-ok'><span class='dot dot-ok'></span> Dati salvati</span>"
-        elif is_dirty:
             status_pill = f"<span class='status-pill status-dirty' title='Campi modificati: {', '.join(dirty_fields)}'><span class='dot dot-dirty'></span> Modifiche non salvate</span>"
         else:
             status_pill = "<span class='status-pill status-ok'><span class='dot dot-ok'></span> Dati salvati</span>"
-
-        status_slot.markdown(f"<div style='display:flex;justify-content:flex-end;margin-bottom:6px;'>{status_pill}</div>", unsafe_allow_html=True)
+        status_slot.markdown(f"<div style='display:flex;justify-content:flex-end;margin-bottom:8px;'>{status_pill}</div>", unsafe_allow_html=True)
 
         # =========================
         # SALVA
         # =========================
+        just_saved = st.session_state["save_state_by_art"].get(current_art_kart, {}).get("just_saved", False) and not is_dirty
         save_btn_label = "✅ Salvato" if just_saved else "💾 Salva nell'origine"
         if st.button(save_btn_label, key=f"save_btn_{current_art_kart}"):
             try:
@@ -847,7 +868,7 @@ with right:
                 else:
                     st.warning("⚠️ Non ho trovato la riga nel foglio dopo il salvataggio. Provo a ricaricare i dati…")
 
-                # aggiorna stato locale per pill e bottone
+                # aggiorna effective + df locale
                 for field in SELECT_FIELDS:
                     st.session_state["effective_by_field"][field][current_art_kart] = values_map[field]
                 mask_row = df["art_kart"].map(to_clean_str) == art_val
@@ -858,6 +879,13 @@ with right:
                         df.loc[mask_row, c] = normalize_spaces(values_map.get(c, ""))
                     st.session_state["df"] = df
 
+                # 🔁 aggiorna snapshot per il badge
+                snapshot_new = {}
+                for f in SELECT_FIELDS:
+                    snapshot_new[f] = normalize_spaces(values_map[f])
+                for c in other_cols:
+                    snapshot_new[c] = normalize_spaces(values_map.get(c, ""))
+                st.session_state["last_saved_by_art"][current_art_kart] = snapshot_new
                 st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": True}
 
                 if result == "updated":
