@@ -386,6 +386,10 @@ st.session_state.setdefault("save_state_by_art", {})     # {art_kart: {"just_sav
 st.session_state.setdefault("last_saved_by_art", {})     # {art_kart: {field: value}}
 st.session_state.setdefault("current_art_kart", None)
 
+# Stato per immagini (spostato sotto tabella risultati)
+st.session_state.setdefault("picked_image_by_art", {})   # {art_kart: {"from_art": str, "url": str}}
+st.session_state.setdefault("uploaded_image_by_art", {}) # {art_kart: {"file": UploadedFile}}
+
 # Cache opzioni uniche per tutti i campi SELECT_FIELDS
 if "unique_options_by_field" not in st.session_state:
     st.session_state["unique_options_by_field"] = {}
@@ -526,6 +530,89 @@ with left:
         except Exception:
             selected_rows = []
     selected_row = selected_rows[0] if len(selected_rows) > 0 else None
+
+    # ---------- GESTIONE IMMAGINE SOTTO LA TABELLA RISULTATI ----------
+    st.markdown("#### 🖼️ Immagine articolo (riga selezionata)")
+    if selected_row is None:
+        st.info("Seleziona una riga per gestire l'immagine.")
+    else:
+        # Trova la riga completa nel df
+        full_row_left = None
+        if "art_kart" in selected_row and "art_kart" in df.columns:
+            key = to_clean_str(selected_row["art_kart"])
+            matches = df[df["art_kart"].map(to_clean_str) == key]
+            if not matches.empty:
+                full_row_left = matches.iloc[0]
+        if full_row_left is None:
+            full_row_left = pd.Series({c: selected_row.get(c, "") for c in df.columns})
+
+        current_art_kart_left = to_clean_str(full_row_left.get("art_kart", ""))
+        current_art_desart_left = to_clean_str(full_row_left.get("art_desart", ""))
+        current_img_url_left = normalize_spaces(to_clean_str(full_row_left.get("URL_immagine", "")))
+
+        # Preview se esiste URL_immagine
+        if current_img_url_left:
+            try:
+                st.image(current_img_url_left, use_container_width=True, caption="Anteprima (URL_immagine)")
+            except Exception:
+                st.caption("Anteprima non disponibile (URL non raggiungibile).")
+            st.code(current_img_url_left, language="text")
+        else:
+            # Dropdown candidati con stesso art_desart (esclusa riga corrente) che hanno URL
+            same_desc = df[
+                (df["art_desart"].map(norm_key) == norm_key(current_art_desart_left))
+                & (df["art_kart"].map(to_clean_str) != current_art_kart_left)
+                & (df["URL_immagine"].map(lambda x: to_clean_str(x) != ""))
+            ][["art_kart", "art_desart", "URL_immagine"]].copy()
+
+            st.caption("Nessuna immagine su questa riga. Puoi:")
+            c_pick, c_up = st.columns([0.60, 0.40])
+
+            with c_pick:
+                if same_desc.empty:
+                    st.selectbox(
+                        "Seleziona immagine da un articolo con stessa descrizione",
+                        options=["— nessun candidato —"],
+                        index=0,
+                        disabled=True,
+                        key=f"pick_img_{current_art_kart_left}",
+                    )
+                else:
+                    options = [{"label": f"{r.art_desart} — #{r.art_kart}", "kart": r.art_kart, "url": r.URL_immagine}
+                               for _, r in same_desc.iterrows()]
+                    labels = ["— scegli —"] + [o["label"] for o in options]
+                    sel = st.selectbox(
+                        "Seleziona immagine da un altro articolo uguale",
+                        options=range(len(labels)),
+                        format_func=lambda i: labels[i],
+                        index=0,
+                        key=f"pick_img_{current_art_kart_left}",
+                    )
+                    if sel > 0:
+                        chosen = options[sel-1]
+                        st.session_state["picked_image_by_art"][current_art_kart_left] = {
+                            "from_art": chosen["kart"],
+                            "url": chosen["url"],
+                        }
+                        try:
+                            st.image(chosen["url"], use_container_width=True, caption=f"Anteprima selezionata da #{chosen['kart']}")
+                        except Exception:
+                            st.caption("Anteprima non disponibile (URL non raggiungibile).")
+                        st.code(chosen["url"], language="text")
+
+            with c_up:
+                up = st.file_uploader(
+                    "Oppure carica immagine",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    accept_multiple_files=False,
+                    key=f"uploader_{current_art_kart_left}"
+                )
+                if up:
+                    st.session_state["uploaded_image_by_art"][current_art_kart_left] = {"file": up}
+                    st.image(up, use_container_width=True, caption="Anteprima upload (locale)")
+
+    st.caption("Con **💾 Salva nell'origine** (a destra) la scelta/upload verrà copiato/caricato su Drive e scritto in *URL_immagine*.")
+    # ---------- FINE GESTIONE IMMAGINE SOTTO TABELLA ----------
 # <<< END BLOCK: LAYOUT SX ------------------------------------------------------
 
 
@@ -650,85 +737,6 @@ with right:
             """
             st.markdown(diff_block, unsafe_allow_html=True)
 # <<< END BLOCK: DETTAGLIO – HEADER/CONCAT/DIFF --------------------------------
-
-
-# >>> BLOCK: DETTAGLIO – IMMAGINE: PREVIEW / PICK DA DUPLICATI / UPLOAD --------
-        # Stato locale per scelta immagine (da altra riga) e upload
-        st.session_state.setdefault("picked_image_by_art", {})   # {art_kart: {"from_art": str, "url": str}}
-        st.session_state.setdefault("uploaded_image_by_art", {}) # {art_kart: {"file": UploadedFile}}
-
-        # URL corrente (se già presente nella riga)
-        current_img_url = normalize_spaces(to_clean_str(full_row.get("URL_immagine", "")))
-
-        st.markdown("#### 🖼️ Immagine articolo")
-
-        if current_img_url:
-            # Preview + URL attuale
-            try:
-                st.image(current_img_url, use_column_width=True, caption="Anteprima immagine (URL_immagine)")
-            except Exception:
-                st.caption("Anteprima non disponibile (URL non raggiungibile).")
-            st.code(current_img_url, language="text")
-        else:
-            # 3.A) Dropdown: cerca altre righe con stesso art_desart (eccetto quella corrente) che hanno URL_immagine
-            same_desc = df[
-                (df["art_desart"].map(norm_key) == norm_key(current_art_desart))
-                & (df["art_kart"].map(to_clean_str) != current_art_kart)
-                & (df["URL_immagine"].map(lambda x: to_clean_str(x) != ""))
-            ][["art_kart", "art_desart", "URL_immagine"]].copy()
-
-            st.caption("Nessuna immagine su questa riga. Puoi:")
-            c_pick, c_up = st.columns([0.60, 0.40])
-
-            with c_pick:
-                if same_desc.empty:
-                    st.selectbox(
-                        "Seleziona immagine da un articolo con stessa descrizione",
-                        options=["— nessun candidato —"],
-                        index=0,
-                        disabled=True,
-                        key=f"pick_img_{current_art_kart}",
-                    )
-                else:
-                    options = [{"label": f"{r.art_desart} — #{r.art_kart}", "kart": r.art_kart, "url": r.URL_immagine}
-                               for _, r in same_desc.iterrows()]
-                    labels = ["— scegli —"] + [o["label"] for o in options]
-                    sel = st.selectbox(
-                        "Seleziona immagine da un altro articolo uguale",
-                        options=range(len(labels)),
-                        format_func=lambda i: labels[i],
-                        index=0,
-                        key=f"pick_img_{current_art_kart}",
-                    )
-                    if sel > 0:
-                        chosen = options[sel-1]
-                        # Memorizza scelta
-                        st.session_state["picked_image_by_art"][current_art_kart] = {
-                            "from_art": chosen["kart"],
-                            "url": chosen["url"],
-                        }
-                        # Mostra anteprima scelta
-                        try:
-                            st.image(chosen["url"], use_column_width=True, caption=f"Anteprima selezionata da #{chosen['kart']}")
-                        except Exception:
-                            st.caption("Anteprima non disponibile (URL non raggiungibile).")
-                        st.code(chosen["url"], language="text")
-
-            # 3.B) Upload immagine da locale
-            with c_up:
-                up = st.file_uploader(
-                    "Oppure carica immagine",
-                    type=["png", "jpg", "jpeg", "webp"],
-                    accept_multiple_files=False,
-                    key=f"uploader_{current_art_kart}"
-                )
-                if up:
-                    st.session_state["uploaded_image_by_art"][current_art_kart] = {"file": up}
-                    st.image(up, use_column_width=True, caption="Anteprima upload (locale)")
-
-        # Nota operativa
-        st.caption("Con **💾 Salva nell'origine**: se hai selezionato un'immagine da un altro articolo, verrà **copiata** nella cartella di destinazione con un nuovo nome; se hai caricato un file locale, verrà **caricato** in Drive e il relativo URL verrà scritto in *URL_immagine*.")
-# <<< END BLOCK: DETTAGLIO – IMMAGINE ------------------------------------------
 
 
 # >>> BLOCK: DETTAGLIO – SUGGERIMENTI SIMILI -----------------------------------
@@ -944,7 +952,6 @@ with right:
                 dirty_fields.append(c)
         is_dirty = len(dirty_fields) > 0
 
-        # Prepara il badge
         if is_dirty:
             st.session_state["save_state_by_art"][current_art_kart] = {"just_saved": False}
             badge_html = (
@@ -967,7 +974,6 @@ with right:
         )
         save_btn_label = "✅ Salvato" if just_saved else "💾 Salva nell'origine"
 
-        # Bottone e badge sulla stessa riga (vicinissimi)
         col_btn, col_badge = st.columns([0.15, 0.85])
         with col_btn:
             save_clicked = st.button(save_btn_label, key=f"save_btn_{current_art_kart}")
@@ -978,7 +984,6 @@ with right:
                 unsafe_allow_html=True,
             )
 
-        # Esegui il salvataggio solo se cliccato
         if save_clicked:
             try:
                 values_map = {}
@@ -995,12 +1000,11 @@ with right:
                     st.error("Campo 'art_kart' obbligatorio."); st.stop()
                 values_map["art_kart"] = art_val
 
-                # 🔹 Gestione immagine: upload/copia su Drive e set URL_immagine
+                # --- Gestione immagine: upload/copia su Drive e set URL_immagine ---
                 def _drive_api(gc):
-                    return gc.session  # sessione autenticata
+                    return gc.session
 
                 def _set_public_anyone(session, file_id: str):
-                    # Rende il file pubblico a chi ha il link
                     try:
                         session.post(
                             f"https://www.googleapis.com/drive/v3/files/{file_id}/permissions",
@@ -1012,8 +1016,7 @@ with right:
                 def _new_view_url(file_id: str) -> str:
                     return f"https://drive.google.com/uc?export=view&id={file_id}"
 
-                # Nome file consigliato
-                safe_prod = re.sub(r"[^A-Za-z0-9._-]+", "_", (values_map.get("Prodotto") or current_art_desart or "img")).strip("_")
+                safe_prod = re.sub(r"[^A-Za-z0-9._-]+", "_", (values_map.get("Prodotto") or to_clean_str(full_row.get("art_desart","")) or "img")).strip("_")
                 if not safe_prod:
                     safe_prod = "img"
                 new_filename = f"{art_val}_{safe_prod}.jpg"
@@ -1021,13 +1024,11 @@ with right:
                 picked = st.session_state["picked_image_by_art"].get(current_art_kart)
                 uploaded = st.session_state["uploaded_image_by_art"].get(current_art_kart)
 
-                # Se l'utente ha caricato un file, esegui upload in Drive
                 if uploaded and uploaded.get("file"):
                     up_file = uploaded["file"]
                     creds_json = json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json())
                     gc = get_gc(creds_json)
                     session = _drive_api(gc)
-
                     files = {
                         "metadata": (
                             None,
@@ -1044,11 +1045,8 @@ with right:
                     new_file_id = resp.json().get("id")
                     _set_public_anyone(session, new_file_id)
                     values_map["URL_immagine"] = _new_view_url(new_file_id)
-
-                    # pulizia stato upload per questa riga
                     st.session_state["uploaded_image_by_art"].pop(current_art_kart, None)
 
-                # Altrimenti, se ha selezionato un'immagine da un altro articolo, fai la copia in Drive
                 elif picked and picked.get("url"):
                     src_url = picked["url"]
                     m = re.search(r"[?&]id=([A-Za-z0-9_-]+)", src_url)
@@ -1065,11 +1063,8 @@ with right:
                         new_file_id = resp.json().get("id")
                         _set_public_anyone(session, new_file_id)
                         values_map["URL_immagine"] = _new_view_url(new_file_id)
-
-                        # pulizia stato pick per questa riga
                         st.session_state["picked_image_by_art"].pop(current_art_kart, None)
-
-                # Se nessuna scelta/upload, mantieni eventuale URL_immagine già editato a mano
+                # --- fine gestione immagine ---
 
                 creds_json = json.loads(Credentials.from_authorized_user_info(st.session_state["oauth_token"], SCOPES).to_json())
                 gc = get_gc(creds_json)
