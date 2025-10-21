@@ -1,0 +1,20 @@
+/* Compatta spazi */
+.block-container { padding-top: 1rem; padding-bottom: 1rem; }
+
+/* Etichetta a sinistra + campo a destra in dettaglio */
+.detail-row {
+  display: grid;
+  grid-template-columns: 180px 1fr auto;
+  gap: .5rem 1rem;
+  align-items: center;
+  margin-bottom: .25rem;
+}
+.detail-label { font-weight: 600; white-space: nowrap; }
+.detail-help  { font-size: 12px; color: #777; }
+
+/* Sezione immagini */
+.image-box { border: 1px solid #e9e9e9; border-radius: 10px; padding: .75rem; }
+.image-url { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+
+/* Tabella più compatta */
+.ag-theme-streamlit .ag-cell { padding-top: 4px !important; padding-bottom: 4px !important; }
